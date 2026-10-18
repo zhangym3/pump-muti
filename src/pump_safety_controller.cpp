@@ -7,24 +7,23 @@ bool PumpConfig::valid() const {
 }
 void PumpSafetyController::boot(uint32_t now) {
   testMs_ = 0;
-  testBootLock_ = dryTest_ = false;
+  dryTest_ = false;
   io_.pump(false); output_ = false; offAt_ = now; key_ = {};
-  phase_ = PumpPhase::Fault; fault_ = PumpFault::BootLock;
-  speed_ = 1; if (!io_.setDuty(duty())) fault_ = PumpFault::Transport;
+  phase_ = PumpPhase::Off; fault_ = PumpFault::None;
+  speed_ = 1; if (!io_.setDuty(duty())) { phase_ = PumpPhase::Fault; fault_ = PumpFault::Transport; }
 }
 bool PumpSafetyController::ready(uint32_t now) {
   return cfg_.valid() && io_.healthy() && phase_ == PumpPhase::Off && elapsed(now, offAt_, cfg_.minOffMs);
 }
 bool PumpSafetyController::testReady(uint32_t now) {
   return cfg_.valid() && io_.healthy() && !output_ &&
-    ((phase_ == PumpPhase::Off && fault_ == PumpFault::None) ||
-     (phase_ == PumpPhase::Fault && fault_ == PumpFault::BootLock)) && elapsed(now, offAt_, cfg_.minOffMs);
+    phase_ == PumpPhase::Off && fault_ == PumpFault::None && elapsed(now, offAt_, cfg_.minOffMs);
 }
 Reply PumpSafetyController::reset(uint32_t now) {
   if (output_) return Reply::NotReady;
   if (!cfg_.valid() || !io_.healthy()) return Reply::NotReady;
   key_ = {}; phase_ = PumpPhase::Off; fault_ = PumpFault::None; offAt_ = now;
-  testBootLock_ = dryTest_ = false;
+  dryTest_ = false;
   return Reply::Ok; // Reset never starts the old task.
 }
 Reply PumpSafetyController::start(JobKey key, uint32_t seq, uint32_t now) {
@@ -37,7 +36,7 @@ Reply PumpSafetyController::start(JobKey key, uint32_t seq, uint32_t now) {
 }
 Reply PumpSafetyController::setSpeed(uint8_t level, uint32_t now) {
   if (level < 1 || level > 3) return Reply::Invalid;
-  if (!cfg_.valid() || (fault_ != PumpFault::None && fault_ != PumpFault::BootLock)) return Reply::NotReady;
+  if (!cfg_.valid() || fault_ != PumpFault::None) return Reply::NotReady;
   if (dryTesting() && level != 1) return Reply::Busy;
   if (!io_.healthy()) { trip(PumpFault::Transport, now); return Reply::NotReady; }
   const auto previous = speed_; speed_ = level;
@@ -52,12 +51,11 @@ Reply PumpSafetyController::startTest(JobKey key, uint32_t seq, uint32_t duratio
     speed_ = 1;
     if (!io_.setDuty(duty())) { trip(PumpFault::Transport, now); return Reply::NotReady; }
   }
-  testBootLock_ = fault_ == PumpFault::BootLock;
   fault_ = PumpFault::None; testMs_ = durationMs; dryTest_ = dryRun;
   key_ = key; seq_ = seq; authAt_ = startAt_ = now;
   phase_ = PumpPhase::Running; output_ = true; io_.pump(true);
   if (!io_.healthy()) { trip(PumpFault::Transport, now); return Reply::NotReady; }
-  return Reply::Ok; // A bounded phone test never unlocks normal dosing.
+  return Reply::Ok; // The normal dosing deadline remains unchanged by a bounded test.
 }
 uint32_t PumpSafetyController::testRemaining(uint32_t now) const {
   const uint32_t spent = uint32_t(now - startAt_);
@@ -75,12 +73,11 @@ void PumpSafetyController::off(uint32_t now) {
 }
 void PumpSafetyController::stop(uint32_t now) {
   off(now); key_ = {};
-  if (testBootLock_) { fault_ = PumpFault::BootLock; phase_ = PumpPhase::Fault; }
-  testBootLock_ = dryTest_ = false;
+  dryTest_ = false;
   if (fault_ == PumpFault::None) phase_ = PumpPhase::Off;
 }
 void PumpSafetyController::trip(PumpFault f, uint32_t now) {
-  testBootLock_ = dryTest_ = false;
+  dryTest_ = false;
   off(now); key_ = {}; fault_ = f; phase_ = PumpPhase::Fault;
 }
 void PumpSafetyController::tick(uint32_t now) {

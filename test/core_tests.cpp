@@ -31,10 +31,10 @@ struct FakeMesh : MeshSender {
 
 void pump_output_only_and_commissioning() {
   FakePump io; PumpSafetyController c(io,{}); c.boot(0);
-  CHECK(!io.on && c.fault() == PumpFault::BootLock && c.reset(0) == Reply::NotReady);
-  PumpSafetyController p(io,pumpConfig()); p.boot(0); CHECK(p.reset(0) == Reply::Ok);
+  CHECK(!io.on && c.phase() == PumpPhase::Off && c.fault() == PumpFault::None && c.reset(0) == Reply::NotReady);
+  PumpSafetyController p(io,pumpConfig()); p.boot(0);
   CHECK(p.start({},1,100) == Reply::Invalid && p.start({1,1},0,100) == Reply::Invalid);
-  CHECK(p.start({1,1},1,49) == Reply::NotReady); CHECK(p.start({1,1},1,100) == Reply::Ok);
+  CHECK(p.start({1,1},1,49) == Reply::NotReady); CHECK(p.start({1,1},1,50) == Reply::Ok);
   p.tick(200); p.tick(700); CHECK(io.on && p.phase() == PumpPhase::Running);
   CHECK(p.reset(701) == Reply::NotReady && io.starts == 1);
   p.stop(702); CHECK(!io.on && p.phase() == PumpPhase::Off);
@@ -219,7 +219,7 @@ void bounded_pump_test_wrap_and_limits() {
 void pwm_idle_and_bounded_switching() {
   FakePump io; PumpSafetyController c(io,pumpConfig()); c.boot(0);
   CHECK(!io.on && io.duty == 50 && c.speed() == 1);
-  CHECK(c.setSpeed(2,0) == Reply::Ok && !io.on && c.fault() == PumpFault::BootLock);
+  CHECK(c.setSpeed(2,0) == Reply::Ok && !io.on && c.fault() == PumpFault::None);
   CHECK(c.reset(0) == Reply::Ok);
   CHECK(c.setSpeed(0,1) == Reply::Invalid && c.setSpeed(4,1) == Reply::Invalid);
   CHECK(c.setSpeed(2,1) == Reply::Ok && io.duty == 75 && !io.on && io.starts == 0);
@@ -249,10 +249,10 @@ void pwm_failure_and_authorization() {
   cfg = pumpConfig(); cfg.commissioned = false; PumpSafetyController locked(io,cfg); locked.boot(0);
   CHECK(locked.setSpeed(3,1) == Reply::NotReady && !io.on);
 }
-void phone_test_preserves_dosing_boot_lock() {
+void phone_test_does_not_relock_dosing() {
   FakePump io; PumpSafetyController c(io,pumpConfig()); c.boot(0);
-  CHECK(!io.on && !c.ready(50) && c.testReady(50));
-  CHECK(c.start({7,1},1,50) == Reply::NotReady);
+  CHECK(!io.on && !c.ready(49) && c.ready(50) && c.testReady(50));
+  CHECK(c.start({7,1},1,49) == Reply::NotReady);
   CHECK(c.setSpeed(3,0) == Reply::Ok && !io.on);
   CHECK(c.startTest({7,1},1,3001,50,true) == Reply::Invalid);
   CHECK(c.startTest({7,1},1,3000,50,true) == Reply::Ok && c.dryTesting());
@@ -261,21 +261,23 @@ void phone_test_preserves_dosing_boot_lock() {
   CHECK(c.setSpeed(1,1000) == Reply::Ok && c.testRemaining(1000) == 2050);
   CHECK(c.renew({7,1},2,1000) == Reply::Stale);
   c.tick(3049); CHECK(io.on); c.tick(3050);
-  CHECK(!io.on && !c.dryTesting() && c.fault() == PumpFault::BootLock);
-  CHECK(!c.testReady(3099) && c.testReady(3100) && !c.ready(3100));
-  CHECK(c.start({7,2},1,3100) == Reply::NotReady);
-  CHECK(c.setSpeed(2,3100) == Reply::Ok);
-  CHECK(c.startTest({7,2},1,3000,3100) == Reply::Ok && io.duty == 75);
-  c.stop(3200); CHECK(!io.on && c.fault() == PumpFault::BootLock);
-  CHECK(c.start({7,3},1,3250) == Reply::NotReady);
-  c.trip(PumpFault::Authorization,3250);
+  CHECK(!io.on && !c.dryTesting() && c.fault() == PumpFault::None);
+  CHECK(!c.testReady(3099) && c.testReady(3100) && c.ready(3100));
+  CHECK(c.start({7,2},1,3100) == Reply::Ok);
+  c.stop(3150);
+  CHECK(c.setSpeed(2,3150) == Reply::Ok);
+  CHECK(c.startTest({7,2},1,3000,3200) == Reply::Ok && io.duty == 75);
+  c.stop(3300); CHECK(!io.on && c.fault() == PumpFault::None);
+  CHECK(c.start({7,3},1,3350) == Reply::Ok);
+  c.stop(3400);
+  c.trip(PumpFault::Authorization,3400);
   CHECK(!c.testReady(4000) && c.startTest({7,3},1,3000,4000,true) == Reply::NotReady);
 }
 void dry_test_wrap_failure_and_replay() {
   FakePump io; PumpSafetyController c(io,pumpConfig()); c.boot(UINT32_MAX - 100);
   CHECK(c.startTest({7,1},1,3000,UINT32_MAX - 50,true) == Reply::Ok);
   c.tick(2948); CHECK(io.on); c.tick(2949);
-  CHECK(!io.on && c.fault() == PumpFault::BootLock);
+  CHECK(!io.on && c.fault() == PumpFault::None);
   io.pwmOk = false;
   CHECK(c.startTest({7,2},1,3000,2999,true) == Reply::NotReady && !io.on);
   ControlRequest q; q.client = 1; q.sequence = 5; q.epoch = 7; q.maxMs = 3000; q.ml = 1;
@@ -311,7 +313,7 @@ int main() {
     {"bounded independent pump test",bounded_pump_test}, {"test wrap limits and cancellation replay",bounded_pump_test_wrap_and_limits},
     {"PWM idle selection and bounded switching",pwm_idle_and_bounded_switching},
     {"PWM failure and authorization deadline",pwm_failure_and_authorization},
-    {"phone tests preserve dosing boot lock",phone_test_preserves_dosing_boot_lock},
+    {"phone tests do not relock dosing",phone_test_does_not_relock_dosing},
     {"dry test wrap failures and replay",dry_test_wrap_failure_and_replay},
     {"wire protocol contract vectors",wire_contract_vectors}
   };

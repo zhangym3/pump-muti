@@ -25,6 +25,8 @@ class Application {
   void meshState(uint32_t request);
   void beginInventory(uint32_t request, uint32_t now);
   void inventoryTick(uint32_t now);
+  void commissionTick(uint32_t now);
+  void commissionResult(uint32_t request, uint8_t slot, uint16_t address, Reply reply, bool commissioned);
   struct InventoryNode { uint16_t address=0; uint8_t slot=0; bool online=false, commissioned=false; };
   InventoryNode inventory_[32];
   uint32_t inventoryRequest_=0, inventoryAt_=0;
@@ -38,6 +40,7 @@ class Application {
   uint32_t lastRequestAt_ = 0;
   bool storageHealthy_ = true, savedJob_ = true;
   bool meshResetPending_ = false;
+  struct CommissionOperation { bool active=false; uint32_t request=0, sentAt=0; uint16_t address=0; uint8_t slot=0, attempts=0; } commission_;
   ControlRequest owner_;
   ControlRequest pumpTestOwner_;
   bool testOutputPublished_ = false;

@@ -46,13 +46,13 @@ class PumpSafetyController {
   void off(uint32_t now);
   PumpIO &io_;
   PumpConfig cfg_;
-  PumpPhase phase_ = PumpPhase::Fault;
-  PumpFault fault_ = PumpFault::BootLock;
+  PumpPhase phase_ = PumpPhase::Off;
+  PumpFault fault_ = PumpFault::None;
   JobKey key_;
   bool output_ = false;
   uint32_t seq_ = 0, authAt_ = 0, startAt_ = 0, offAt_ = 0;
   uint32_t testMs_ = 0;
-  bool testBootLock_ = false, dryTest_ = false;
+  bool dryTest_ = false;
   uint8_t speed_ = 1;
 };
 const char *pumpFaultName(PumpFault f);

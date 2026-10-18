@@ -113,6 +113,17 @@ void Application::incoming(const Packet &p, uint32_t now) {
     w.u8(uint8_t(pump_.fault())); w.u8(uint8_t(scheduler_.report().phase)); mesh_.send(reply);
     // Read saved results after a reboot without reissuing PREPARE/START.
     auto query = packet(Op::StatusGet, p.peer); Writer qw{query}; qw.key({}); mesh_.send(query);
+  } else if (p.op == Op::CommissionReply) {
+    const uint32_t request = r.u32(); const uint8_t rawReply = r.u8(), configured = r.u8();
+    const uint32_t k = r.u32(), version = r.u32();
+    if (!r.done() || !commission_.active || p.peer != commission_.address || request != commission_.request ||
+        rawReply > uint8_t(Reply::Unknown) || configured > 1) return;
+    Reply result = Reply(rawReply);
+    if (result == Reply::Ok && (!configured || !validK(k) || !version)) result = Reply::Invalid;
+    if (configured && validK(k) && version) scheduler_.hello(p.peer, k, version, true, now);
+    if (result == Reply::Ok) mesh_.slaveHello(p.peer);
+    commissionResult(request, commission_.slot, p.peer, result, configured == 1);
+    commission_.active = false;
   } else if (p.op == Op::Status) {
     ValveStatus s; if (!decodeStatus(p, s)) return;
     scheduler_.status(p.peer, s, now);
@@ -313,6 +324,41 @@ void Application::command(CommandLine &line, uint32_t now) {
     if (!accepted) gateway_.publish("BUSY mesh_not_accepted");
     meshState(uint32_t(request)); return;
   }
+  if (!strcmp(op, "commission")) {
+    uint64_t epoch=0, request=0, slot=0;
+    if (count != 5 || !number(1,epoch) || !number(2,request) || !number(3,slot) ||
+        strcmp(tokens[4], "CONFIRM") || !epoch || epoch > UINT32_MAX || !request || request > UINT32_MAX ||
+        slot < 1 || slot > MaxNodes) {
+      commissionResult(0, 0, 0, Reply::Invalid, false); return;
+    }
+    const uint32_t req = uint32_t(request); const uint8_t targetSlot = uint8_t(slot);
+    uint16_t address = store_.state().nodes[slot - 1].address;
+    auto fail = [&](Reply reply, bool configured=false) { commissionResult(req,targetSlot,address,reply,configured); };
+    if (epoch != store_.state().epoch) { fail(Reply::Stale); return; }
+    if (commission_.active) { fail(Reply::Busy); return; }
+    if (!storageHealthy_) { fail(Reply::Storage); return; }
+    if (!mesh_.ready() || !mesh_.ownsSlave(address)) { fail(Reply::Unauthorized); return; }
+    if (scheduler_.active() || pump_.output() || pump_.testing() || store_.state().lastJob.unknown || mesh_.managementBusy()) {
+      fail(Reply::Busy); return;
+    }
+    const auto &node = scheduler_.node(slot - 1);
+    if (scheduler_.find(address) != int(slot - 1) || !node.seen || elapsed(now,node.seenAt,15000)) { fail(Reply::Offline); return; }
+    if (!validK(node.config.k) || !node.config.version || node.status.valveCommand) { fail(Reply::NotReady); return; }
+    if (node.commissioned) { fail(Reply::Ok,true); return; }
+    auto packetOut = packet(Op::Commission,address); Writer writer{packetOut}; writer.u32(req);
+    if (!mesh_.send(packetOut)) { fail(Reply::Offline); return; }
+    commission_={true,req,now,address,targetSlot,1};
+    return;
+  }
+  if (!strcmp(op, "pump-reset")) {
+    if (!line.bluetooth && count == 1) {
+      if (!storageHealthy_ || commission_.active || scheduler_.active() || pump_.output() || pump_.testing() ||
+          store_.state().lastJob.unknown || mesh_.managementBusy()) {
+        gateway_.publish("BUSY pump_reset_requires_idle"); return;
+      }
+      gateway_.publish(replyName(pump_.reset(now))); return;
+    }
+  }
   if (line.bluetooth) { gateway_.publish("UNAUTHORIZED maintenance_requires_USB"); return; }
   if (!strcmp(op, "estop") && count == 1) {
     scheduler_.stop(Reason::Manual, now);
@@ -386,7 +432,24 @@ void Application::inventoryTick(uint32_t now) {
   } else { snprintf(line,sizeof(line),"INV_END epoch=%lu req=%lu count=%u",(unsigned long)store_.state().epoch,(unsigned long)inventoryRequest_,inventoryCount_); inventorySending_=false; }
   gateway_.publish(line);
 }
+void Application::commissionResult(uint32_t request,uint8_t slot,uint16_t address,Reply reply,bool commissioned) {
+  char line[144];
+  snprintf(line,sizeof(line),"COMMISSION epoch=%lu req=%lu slot=%u addr=%04x reply=%s commissioned=%u",
+    (unsigned long)store_.state().epoch,(unsigned long)request,unsigned(slot),address,replyName(reply),commissioned);
+  gateway_.publish(line);
+}
+void Application::commissionTick(uint32_t now) {
+  if (!commission_.active || !elapsed(now,commission_.sentAt,800)) return;
+  if (commission_.attempts < 3) {
+    auto retry=packet(Op::Commission,commission_.address); Writer writer{retry}; writer.u32(commission_.request);
+    if (mesh_.send(retry)) { ++commission_.attempts; commission_.sentAt=now; return; }
+  }
+  if (!elapsed(now,commission_.sentAt,8000)) return;
+  commissionResult(commission_.request,commission_.slot,commission_.address,Reply::Offline,false);
+  commission_.active=false;
+}
 void Application::periodic(uint32_t now) {
+  commissionTick(now);
   if (meshResetPending_) {
     const auto &meshState = mesh_.management();
     if (!strcmp(meshState.phase, "FAILED")) {
