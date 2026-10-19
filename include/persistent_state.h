@@ -23,13 +23,16 @@ struct LegacyPersistentState {
   JobReport lastJob;
   ValveStatus lastResults[MaxNodes] = {};
 };
-// Format 2 retains the complete format-1 ledger and appends each client's plan.
+// Format 2 appended each client's plan. Format 3 uses a former JobReport padding
+// byte for the first stop reason; legacy padding is explicitly ignored on load.
 struct PersistentState : LegacyPersistentState {
   uint8_t clientAmounts[16][MaxNodes] = {};
-  PersistentState() { format = 2; }
+  PersistentState() { format = 3; }
 };
 static_assert(std::is_trivially_copyable<LegacyPersistentState>::value, "legacy NVS must remain byte-copyable");
 static_assert(std::is_trivially_copyable<PersistentState>::value, "NVS must remain byte-copyable");
+static_assert(sizeof(JobReport) == 28 && offsetof(JobReport, reason) == 25,
+              "stop reason must fit in the legacy JobReport padding");
 #ifdef ESP_PLATFORM
 static_assert(sizeof(LegacyPersistentState) == 2040, "ESP32 format-1 NVS ABI changed");
 #endif
@@ -42,10 +45,13 @@ inline bool decodePersistentState(const void *bytes, size_t size, uint32_t profi
     memcpy(static_cast<LegacyPersistentState *>(&decoded), bytes, size);
     if (decoded.format != 1) return false;
     memset(decoded.clientAmounts, 0, sizeof(decoded.clientAmounts));
-    decoded.format = 2;
+    decoded.lastJob.reason = Reason::None; decoded.format = 3;
   } else if (size == sizeof(PersistentState)) {
     memcpy(&decoded, bytes, size);
-    if (decoded.format != 2) return false;
+    if (decoded.format != 2 && decoded.format != 3) return false;
+    if (decoded.format == 2) decoded.lastJob.reason = Reason::None;
+    decoded.format = 3;
+    if (decoded.lastJob.reason > Reason::Protocol) return false;
     for (size_t i = 0; i < 16; ++i) {
       const auto &c = decoded.clients[i];
       if (c.client && c.mask && !c.ml && !validAmounts(c.mask, decoded.clientAmounts[i])) return false;

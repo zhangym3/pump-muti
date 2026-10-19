@@ -1,0 +1,264 @@
+{
+  "field_accepted": false,
+  "production_firmware_changed": false,
+  "device_reset": false,
+  "actuator_commands_sent": false,
+  "sources": {
+    "COM5": {
+      "queries": [
+        {
+          "kind": "command",
+          "utc": "2026-10-19T13:24:23.599289+00:00",
+          "text": "hello"
+        },
+        {
+          "kind": "command",
+          "utc": "2026-10-19T13:24:24.565875+00:00",
+          "text": "local"
+        },
+        {
+          "kind": "command",
+          "utc": "2026-10-19T13:24:25.595855+00:00",
+          "text": "nodes"
+        },
+        {
+          "kind": "command",
+          "utc": "2026-10-19T13:24:40.546954+00:00",
+          "text": "nodes"
+        },
+        {
+          "kind": "command",
+          "utc": "2026-10-19T13:24:55.555402+00:00",
+          "text": "nodes"
+        },
+        {
+          "kind": "command",
+          "utc": "2026-10-19T13:25:10.547296+00:00",
+          "text": "nodes"
+        },
+        {
+          "kind": "command",
+          "utc": "2026-10-19T13:25:13.573217+00:00",
+          "text": "hello"
+        },
+        {
+          "kind": "command",
+          "utc": "2026-10-19T13:25:14.588067+00:00",
+          "text": "local"
+        }
+      ],
+      "lines": [
+        {
+          "received_utc": "2026-10-19T13:24:23.619986+00:00",
+          "text": "HELLO role=PUMP_MASTER addr=0001 master=0001 epoch=116 mesh=1 commissioned=1 pump_fault=NONE"
+        },
+        {
+          "received_utc": "2026-10-19T13:24:24.590642+00:00",
+          "text": "LOCAL pump_command=0 pump_phase=0 fault=NONE test_supported=1 test_active=0 test_ms=0 test_client=0 test_seq=0 pump_ready=0"
+        },
+        {
+          "received_utc": "2026-10-19T13:24:24.597555+00:00",
+          "text": "PUMP_PWM epoch=116 rev=0 level=1 duty=50 hz=20000 output=0 reply=OK test_manual=1 dry_max_ms=3000 dry_active=0"
+        },
+        {
+          "received_utc": "2026-10-19T13:24:25.619781+00:00",
+          "text": "NODE slot=1 addr=0002 k=5880 version=1 online=0 commissioned=1 phase=OPEN_COMMAND_SENT pulses=0 age_ms=349390"
+        },
+        {
+          "received_utc": "2026-10-19T13:24:40.568133+00:00",
+          "text": "NODE slot=1 addr=0002 k=5880 version=1 online=0 commissioned=1 phase=OPEN_COMMAND_SENT pulses=0 age_ms=364345"
+        },
+        {
+          "received_utc": "2026-10-19T13:24:55.576576+00:00",
+          "text": "NODE slot=1 addr=0002 k=5880 version=1 online=0 commissioned=1 phase=OPEN_COMMAND_SENT pulses=0 age_ms=379350"
+        },
+        {
+          "received_utc": "2026-10-19T13:25:10.571729+00:00",
+          "text": "NODE slot=1 addr=0002 k=5880 version=1 online=0 commissioned=1 phase=OPEN_COMMAND_SENT pulses=0 age_ms=394345"
+        },
+        {
+          "received_utc": "2026-10-19T13:25:13.593872+00:00",
+          "text": "HELLO role=PUMP_MASTER addr=0001 master=0001 epoch=116 mesh=1 commissioned=1 pump_fault=NONE"
+        },
+        {
+          "received_utc": "2026-10-19T13:25:14.612420+00:00",
+          "text": "LOCAL pump_command=0 pump_phase=0 fault=NONE test_supported=1 test_active=0 test_ms=0 test_client=0 test_seq=0 pump_ready=0"
+        },
+        {
+          "received_utc": "2026-10-19T13:25:14.623070+00:00",
+          "text": "PUMP_PWM epoch=116 rev=0 level=1 duty=50 hz=20000 output=0 reply=OK test_manual=1 dry_max_ms=3000 dry_active=0"
+        }
+      ],
+      "last_seen_inferred_local_from_query_receipt": [
+        "2026-10-19T21:18:36.229781+08:00",
+        "2026-10-19T21:18:36.223133+08:00",
+        "2026-10-19T21:18:36.226576+08:00",
+        "2026-10-19T21:18:36.226729+08:00"
+      ]
+    },
+    "COM6": {
+      "queries": [
+        {
+          "kind": "command",
+          "utc": "2026-10-19T13:24:23.538021+00:00",
+          "text": "hello"
+        },
+        {
+          "kind": "command",
+          "utc": "2026-10-19T13:24:24.488031+00:00",
+          "text": "local"
+        },
+        {
+          "kind": "command",
+          "utc": "2026-10-19T13:25:13.480256+00:00",
+          "text": "hello"
+        },
+        {
+          "kind": "command",
+          "utc": "2026-10-19T13:25:14.494607+00:00",
+          "text": "local"
+        }
+      ],
+      "lines": [
+        {
+          "received_utc": "2026-10-19T13:24:23.157504+00:00",
+          "text": "I (410565) mesh_diag: healthy=0 submitted=16 ended=16 merged=39 expired=4 faults=1 peak_sar=1 peak_pending=4 sar_max_ms=2777 tick_max_ms=36 trace_lost=0"
+        },
+        {
+          "received_utc": "2026-10-19T13:24:23.546247+00:00",
+          "text": "HELLO role=VALVE_SLAVE addr=0002 master=0001 epoch=116 mesh=1 commissioned=1"
+        },
+        {
+          "received_utc": "2026-10-19T13:24:24.496037+00:00",
+          "text": "LOCAL job=116:28 phase=FAULT reason=LEASE valve_command=0 pulses=0 ml=0 k=5880 version=1 quiet=1 truncated=0"
+        },
+        {
+          "received_utc": "2026-10-19T13:24:24.499552+00:00",
+          "text": "INTERLOCK enabled=0 ready=1 pin=6"
+        },
+        {
+          "received_utc": "2026-10-19T13:24:33.161577+00:00",
+          "text": "I (420570) mesh_diag: healthy=0 submitted=16 ended=16 merged=39 expired=4 faults=1 peak_sar=1 peak_pending=4 sar_max_ms=2777 tick_max_ms=36 trace_lost=0"
+        },
+        {
+          "received_utc": "2026-10-19T13:24:43.163209+00:00",
+          "text": "I (430572) mesh_diag: healthy=0 submitted=16 ended=16 merged=39 expired=4 faults=1 peak_sar=1 peak_pending=4 sar_max_ms=2777 tick_max_ms=36 trace_lost=0"
+        },
+        {
+          "received_utc": "2026-10-19T13:24:53.162774+00:00",
+          "text": "I (440572) mesh_diag: healthy=0 submitted=16 ended=16 merged=39 expired=4 faults=1 peak_sar=1 peak_pending=4 sar_max_ms=2777 tick_max_ms=36 trace_lost=0"
+        },
+        {
+          "received_utc": "2026-10-19T13:25:03.165297+00:00",
+          "text": "I (450575) mesh_diag: healthy=0 submitted=16 ended=16 merged=39 expired=4 faults=1 peak_sar=1 peak_pending=4 sar_max_ms=2777 tick_max_ms=36 trace_lost=0"
+        },
+        {
+          "received_utc": "2026-10-19T13:25:13.166590+00:00",
+          "text": "I (460577) mesh_diag: healthy=0 submitted=16 ended=16 merged=39 expired=4 faults=1 peak_sar=1 peak_pending=4 sar_max_ms=2777 tick_max_ms=36 trace_lost=0"
+        },
+        {
+          "received_utc": "2026-10-19T13:25:13.488561+00:00",
+          "text": "HELLO role=VALVE_SLAVE addr=0002 master=0001 epoch=116 mesh=1 commissioned=1"
+        },
+        {
+          "received_utc": "2026-10-19T13:25:14.503160+00:00",
+          "text": "LOCAL job=116:28 phase=FAULT reason=LEASE valve_command=0 pulses=0 ml=0 k=5880 version=1 quiet=1 truncated=0"
+        },
+        {
+          "received_utc": "2026-10-19T13:25:14.506715+00:00",
+          "text": "INTERLOCK enabled=0 ready=1 pin=6"
+        },
+        {
+          "received_utc": "2026-10-19T13:25:23.169480+00:00",
+          "text": "I (470579) mesh_diag: healthy=0 submitted=16 ended=16 merged=39 expired=4 faults=1 peak_sar=1 peak_pending=4 sar_max_ms=2777 tick_max_ms=36 trace_lost=0"
+        }
+      ]
+    }
+  },
+  "evidence_files": [
+    {
+      "path": "D:\\pump\\pump-muti\\dist\\offline-20261019-live-01.jsonl",
+      "bytes": 131372571,
+      "sha256": "e0c4b4cee0db5e237bd4f98e08ff69d8968ffa9838630ce6a68b1ada3a50b190"
+    },
+    {
+      "path": "D:\\pump\\pump-muti\\.pio\\diagnostics\\offline-20261019\\android-ble.log",
+      "bytes": 3483,
+      "sha256": "bff56d7af88ab2808cadb05e3fa3339cd369ef774dc654049367c6c61e40f012"
+    },
+    {
+      "path": "D:\\pump\\pump-muti\\.pio\\diagnostics\\offline-20261019\\COM5-query.jsonl",
+      "bytes": 4453,
+      "sha256": "d00fd0431fc15a82207d6a74e330c9e5a1cd296ffdb40511f236fd2b1d6e625b"
+    },
+    {
+      "path": "D:\\pump\\pump-muti\\.pio\\diagnostics\\offline-20261019\\COM5-query.log",
+      "bytes": 1436,
+      "sha256": "8e9ace7968256cc68b289b3514823bbdad52515f94770a658114d51ceb81d259"
+    },
+    {
+      "path": "D:\\pump\\pump-muti\\.pio\\diagnostics\\offline-20261019\\COM6-query.jsonl",
+      "bytes": 3886,
+      "sha256": "f3d016b694c690e23a0b73ae00477a793ceae1fce1c84f8ab21f0c5fbab266f0"
+    },
+    {
+      "path": "D:\\pump\\pump-muti\\.pio\\diagnostics\\offline-20261019\\COM6-query.log",
+      "bytes": 1953,
+      "sha256": "6d2d354b997cd90376078e9648496deb830b32c00efc62ccfa62ac80e53c745a"
+    },
+    {
+      "path": "D:\\pump\\pump-muti\\.pio\\diagnostics\\offline-20261019\\query_readonly.py",
+      "bytes": 2172,
+      "sha256": "50bb3fedf656d73d3fd4c890429155f4070650290f55b5a05d0653262ced1fd2"
+    },
+    {
+      "path": "D:\\pump\\pump-muti\\.pio\\diagnostics\\offline-20261019\\repro-results.jsonl",
+      "bytes": 336,
+      "sha256": "cb1203c267bcfa29c4c8bf784987bd840a314b0fc16e1bedb95edaaea7c44e27"
+    },
+    {
+      "path": "D:\\pump\\pump-muti\\.pio\\diagnostics\\offline-20261019\\repro.cpp",
+      "bytes": 2271,
+      "sha256": "1741fcb3086af36c1331e2260f1db33eff97e95e28d35b1eb58754d0f852839e"
+    },
+    {
+      "path": "D:\\pump\\pump-muti\\docs\\analysis\\offline_governor_repro_20261019.cpp",
+      "bytes": 2271,
+      "sha256": "1741fcb3086af36c1331e2260f1db33eff97e95e28d35b1eb58754d0f852839e"
+    }
+  ],
+  "governor_header_sha256": "c0e10d4015ed5c2b2f90a9b994f0946f67c1daa3690038d5fc427883adedeeb8",
+  "findings": {
+    "direct_cause": "slave Mesh TX governor remains frozen; subsequent Hello enqueue/dispatch blocked",
+    "first_trigger": "not captured; cannot distinguish SAR error, send rejection, critical deadline, or other fault branches from counters alone",
+    "user_update_report": "user states both master and slave updated",
+    "runtime_identity": "master serial behavior differs from current candidate; exact running build IDs not captured",
+    "safety_state": "master pump output off; slave valve output off; job 116:28 unresolved at master",
+    "reproduction": "completed SAR error and LeaseAck deadline independently leave inFlight=0 but reject all six subsequent Hello attempts; Hello expiry alone does not freeze"
+  },
+  "reproduction_results": [
+    {
+      "scenario": "completed_sar_error",
+      "healthy": false,
+      "in_flight": 0,
+      "faults": 1,
+      "ended": 1,
+      "expired": 0,
+      "hellos_rejected_60s": 6
+    },
+    {
+      "scenario": "lease_ack_expired_behind_status",
+      "healthy": false,
+      "in_flight": 0,
+      "faults": 1,
+      "ended": 1,
+      "expired": 1,
+      "hellos_rejected_60s": 6
+    },
+    {
+      "scenario": "hello_expiry_only",
+      "healthy": true,
+      "next_hello_dispatched": true
+    }
+  ]
+}

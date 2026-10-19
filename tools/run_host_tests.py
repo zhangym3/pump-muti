@@ -12,6 +12,9 @@ compiler = args.compiler or next((p for name in ("zig", "clang++", "g++") if (p 
 if not compiler:
     parser.error("Pass --compiler with a C++17 compiler or Zig executable")
 root = Path(__file__).resolve().parents[1]
+for name in ("mesh_tx_governor.h", "mesh_tx_diagnostics.h"):
+    if (root / "include" / name).read_bytes() != (root.parent / "pump-muti-slave/include" / name).read_bytes():
+        raise RuntimeError("Master/slave shared header differs: " + name)
 out = root / ".pio" / "host-tests"
 out.mkdir(parents=True, exist_ok=True)
 exe = out / ("core_tests.exe" if sys.platform == "win32" else "core_tests")
@@ -24,3 +27,11 @@ cmd += [str(root / p) for p in ("test/core_tests.cpp", "src/protocol.cpp",
 cmd += ["-o", str(exe)]
 subprocess.run(cmd, cwd=root, check=True)
 subprocess.run([str(exe)], cwd=root, check=True)
+
+mesh_exe = out / ("mesh_tests.exe" if sys.platform == "win32" else "mesh_tests")
+mesh_cmd = [compiler] + (["c++"] if Path(compiler).stem.lower() == "zig" else [])
+mesh_cmd += ["-std=c++17", "-Wall", "-Wextra", "-Werror", "-O2", "-I", str(root / "include"), "-I", str(root.parent / "pump-muti-slave/include")]
+mesh_cmd += [str(root / p) for p in ("test/mesh_tests.cpp", "src/protocol.cpp", "src/pump_safety_controller.cpp", "src/master_scheduler.cpp")]
+mesh_cmd += [str(root.parent / "pump-muti-slave/src/flow_job_controller.cpp"), "-o", str(mesh_exe)]
+subprocess.run(mesh_cmd, cwd=root, check=True)
+subprocess.run([str(mesh_exe)], cwd=root, check=True)

@@ -1,0 +1,114 @@
+{
+  "analysis_date": "2026-10-19",
+  "scope": "Local analysis inputs only; not deployed firmware or a claim of pristine vendor sources. No SDK patch has been implemented.",
+  "platform": "espressif32@6.10.0",
+  "framework_package_version": "3.50400.0",
+  "idf_version": "5.4.0",
+  "sdk_inputs": [
+    {
+      "path": "C:/Users/79622/.platformio/packages/framework-espidf/package.json",
+      "bytes": 536,
+      "sha256": "8038fceb30b894871e2d986d6c5ec0527035ba4cd534f3435f6a423bdafe1145"
+    },
+    {
+      "path": "C:/Users/79622/.platformio/packages/framework-espidf/version.txt",
+      "bytes": 5,
+      "sha256": "742c2c22a2ebdb26fb9bf21f6f9df508587b7eccd9d59485a4f45935adafde23"
+    },
+    {
+      "path": "C:/Users/79622/.platformio/packages/framework-espidf/components/bt/esp_ble_mesh/core/transport.c",
+      "bytes": 53104,
+      "sha256": "752dd7f8be6645ac6bacf7c654ac92b921844ffe65afec7c26e0ab1276896243"
+    },
+    {
+      "path": "C:/Users/79622/.platformio/packages/framework-espidf/components/bt/esp_ble_mesh/core/access.c",
+      "bytes": 36632,
+      "sha256": "f9a98a9d1b3d7f21fd5afc0f07e2716b6544b9935e23fc451a7759e232cef699"
+    },
+    {
+      "path": "C:/Users/79622/.platformio/packages/framework-espidf/components/bt/esp_ble_mesh/core/net.c",
+      "bytes": 65162,
+      "sha256": "ef39bd3b9ad9d00903d647c3d533ad731dc17c388d3a96dad5404eb70827fb34"
+    },
+    {
+      "path": "C:/Users/79622/.platformio/packages/framework-espidf/components/bt/esp_ble_mesh/api/core/esp_ble_mesh_networking_api.c",
+      "bytes": 27578,
+      "sha256": "0afc15b87d9f90c179295ba4a085c0b73f483bc194412f95c10290ac24ba7704"
+    },
+    {
+      "path": "C:/Users/79622/.platformio/packages/framework-espidf/components/bt/esp_ble_mesh/api/core/include/esp_ble_mesh_networking_api.h",
+      "bytes": 28582,
+      "sha256": "4ad4b379d9b995741ab80ecbc2f79f54e49e338a007de50782bccbc3bad0cf44"
+    },
+    {
+      "path": "C:/Users/79622/.platformio/packages/framework-espidf/components/bt/esp_ble_mesh/btc/btc_ble_mesh_prov.c",
+      "bytes": 132743,
+      "sha256": "1c88c3b76722a67cb9c803f7bc94378fe160d6fd27846b5d9d14d87b500ad54f"
+    },
+    {
+      "path": "C:/Users/79622/.platformio/packages/framework-espidf/components/bt/esp_ble_mesh/btc/include/btc_ble_mesh_prov.h",
+      "bytes": 14807,
+      "sha256": "4e25be6d3d18ced9f3ab09e169cae36bb84efbfc877504c44db5068a2c0e76a2"
+    }
+  ],
+  "projects": {
+    "master": {
+      "repository": "D:/pump/pump-muti",
+      "head": "ad43f28bcef9ac4477d2c8428f000195e77d383c",
+      "inputs": [
+        {
+          "path": "D:/pump/pump-muti/platformio.ini",
+          "bytes": 462,
+          "sha256": "4528426c2df860fd7248c18f6a26ef09504a5cb1487a620674dbcab69b1a7571"
+        },
+        {
+          "path": "D:/pump/pump-muti/sdkconfig.pump_master",
+          "bytes": 88895,
+          "sha256": "43284a92975973e7d197baeb40f8a4e1c783c32f5c463b004842bcc1309bcc1e"
+        },
+        {
+          "path": "D:/pump/pump-muti/include/board_profile.h",
+          "bytes": 879,
+          "sha256": "57b263a2ba7e448b5805434da2bde0c50f74cc80c54dab5a82c9ff4846ba2d52"
+        },
+        {
+          "path": "D:/pump/pump-muti/include/protocol.h",
+          "bytes": 3358,
+          "sha256": "06199565dca4659b41660adfcf07182d3d45eca326e9d581a21afe52c44dca75"
+        }
+      ]
+    },
+    "slave": {
+      "repository": "D:/pump/pump-muti-slave",
+      "head": "56821a3fd071347f505d532620e7e4f628ebdbdf",
+      "inputs": [
+        {
+          "path": "D:/pump/pump-muti-slave/platformio.ini",
+          "bytes": 432,
+          "sha256": "2bb71d95fec4c9c0f23566087635f91f96496031544ca1f4003aee993ffa84a3"
+        },
+        {
+          "path": "D:/pump/pump-muti-slave/sdkconfig.valve_slave_c3",
+          "bytes": 87115,
+          "sha256": "ce23bdedb4904b2d5c7cad45c0d576209c654c91d07d3e5459e5a4ad076f3aee"
+        },
+        {
+          "path": "D:/pump/pump-muti-slave/include/flow_job_controller.h",
+          "bytes": 2232,
+          "sha256": "1b668d964fc82cecdaab7514f4e51de2db40f34cd91128a67b616933104ed831"
+        },
+        {
+          "path": "D:/pump/pump-muti-slave/include/protocol.h",
+          "bytes": 3358,
+          "sha256": "06199565dca4659b41660adfcf07182d3d45eca326e9d581a21afe52c44dca75"
+        }
+      ]
+    },
+    "app": {
+      "repository": "D:/pump/pumpmutiapp",
+      "head": "4c8ea4a4169dc9805bd27d141e95c96b9c15d16f",
+      "inputs": []
+    }
+  },
+  "planned_patch_version": null
+}

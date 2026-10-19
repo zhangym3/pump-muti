@@ -1,0 +1,562 @@
+{
+  "analysis_date": "2026-10-19",
+  "reference_heads": {
+    "master": "ad43f28",
+    "slave": "56821a3",
+    "app": "4c8ea4a"
+  },
+  "scope": "Offline arithmetic only; not measured throughput, airtime or supported concurrency.",
+  "assumptions": {
+    "vendor_opcode_bytes": 3,
+    "short_transmic_bytes": 4,
+    "unsegmented_access_limit_bytes": 11,
+    "segmented_data_bytes_per_pdu": 12,
+    "master_start_global_interval_ms": 150,
+    "master_opening_timeout_ms": 4000,
+    "slave_lease_timeout_ms": 3000,
+    "current_max_concurrent": 1,
+    "network_transmit_count": 1,
+    "local_group_sar_total_rounds": 5,
+    "local_group_sar_retransmit_timer_ms": 50,
+    "group_timer_is_not_total_lifetime_bound": true,
+    "extra_unicast_sar_retransmits_excluded": true,
+    "group_receiver_assumption": "All registered nodes are online and subscribed; all ACK a valid Lease, including STALE replies.",
+    "steady_state_formula": "2 + 2*group_receivers + 1.5*active + 0.9*registered",
+    "including_fixed_group_sar_formula": "10 + 2*group_receivers + 1.5*active + 0.9*registered",
+    "proposed_unicast_optimized_formula": "5.5*active + 0.3*registered",
+    "bearer_assumption": "Advertising data only, network count=1; excludes relays, proxy forwarding, SAR ACKs, beacons, management and phase events."
+  },
+  "messages": [
+    {
+      "message": "Prepare",
+      "payload_bytes": 28,
+      "access_bytes": 31,
+      "segmented": true,
+      "lower_transport_data_pdus": 3
+    },
+    {
+      "message": "Start",
+      "payload_bytes": 8,
+      "access_bytes": 11,
+      "segmented": false,
+      "lower_transport_data_pdus": 1
+    },
+    {
+      "message": "Lease",
+      "payload_bytes": 12,
+      "access_bytes": 15,
+      "segmented": true,
+      "lower_transport_data_pdus": 2
+    },
+    {
+      "message": "Close",
+      "payload_bytes": 9,
+      "access_bytes": 12,
+      "segmented": true,
+      "lower_transport_data_pdus": 2
+    },
+    {
+      "message": "StatusGet",
+      "payload_bytes": 8,
+      "access_bytes": 11,
+      "segmented": false,
+      "lower_transport_data_pdus": 1
+    },
+    {
+      "message": "Status",
+      "payload_bytes": 27,
+      "access_bytes": 30,
+      "segmented": true,
+      "lower_transport_data_pdus": 3
+    },
+    {
+      "message": "Summary",
+      "payload_bytes": 18,
+      "access_bytes": 21,
+      "segmented": true,
+      "lower_transport_data_pdus": 3
+    },
+    {
+      "message": "EventAck",
+      "payload_bytes": 12,
+      "access_bytes": 15,
+      "segmented": true,
+      "lower_transport_data_pdus": 2
+    },
+    {
+      "message": "Hello",
+      "payload_bytes": 9,
+      "access_bytes": 12,
+      "segmented": true,
+      "lower_transport_data_pdus": 2
+    },
+    {
+      "message": "HelloReply",
+      "payload_bytes": 6,
+      "access_bytes": 9,
+      "segmented": false,
+      "lower_transport_data_pdus": 1
+    },
+    {
+      "message": "LeaseAck",
+      "payload_bytes": 13,
+      "access_bytes": 16,
+      "segmented": true,
+      "lower_transport_data_pdus": 2
+    },
+    {
+      "message": "CommandReply",
+      "payload_bytes": 10,
+      "access_bytes": 13,
+      "segmented": true,
+      "lower_transport_data_pdus": 2
+    },
+    {
+      "message": "Request_uniform",
+      "payload_bytes": 37,
+      "access_bytes": 40,
+      "segmented": true,
+      "lower_transport_data_pdus": 4
+    },
+    {
+      "message": "Request_individual",
+      "payload_bytes": 61,
+      "access_bytes": 64,
+      "segmented": true,
+      "lower_transport_data_pdus": 6
+    },
+    {
+      "message": "Response",
+      "payload_bytes": 46,
+      "access_bytes": 49,
+      "segmented": true,
+      "lower_transport_data_pdus": 5
+    }
+  ],
+  "ideal_opening_first_sweep": [
+    {
+      "active_nodes": 1,
+      "ideal_last_start_submission_ms": 0,
+      "margin_to_master_opening_4000_ms": 4000,
+      "margin_to_first_slave_lease_3000_ms": 3000
+    },
+    {
+      "active_nodes": 4,
+      "ideal_last_start_submission_ms": 450,
+      "margin_to_master_opening_4000_ms": 3550,
+      "margin_to_first_slave_lease_3000_ms": 2550
+    },
+    {
+      "active_nodes": 5,
+      "ideal_last_start_submission_ms": 600,
+      "margin_to_master_opening_4000_ms": 3400,
+      "margin_to_first_slave_lease_3000_ms": 2400
+    },
+    {
+      "active_nodes": 8,
+      "ideal_last_start_submission_ms": 1050,
+      "margin_to_master_opening_4000_ms": 2950,
+      "margin_to_first_slave_lease_3000_ms": 1950
+    },
+    {
+      "active_nodes": 16,
+      "ideal_last_start_submission_ms": 2250,
+      "margin_to_master_opening_4000_ms": 1750,
+      "margin_to_first_slave_lease_3000_ms": 750
+    },
+    {
+      "active_nodes": 24,
+      "ideal_last_start_submission_ms": 3450,
+      "margin_to_master_opening_4000_ms": 550,
+      "margin_to_first_slave_lease_3000_ms": -450
+    },
+    {
+      "active_nodes": 27,
+      "ideal_last_start_submission_ms": 3900,
+      "margin_to_master_opening_4000_ms": 100,
+      "margin_to_first_slave_lease_3000_ms": -900
+    },
+    {
+      "active_nodes": 28,
+      "ideal_last_start_submission_ms": 4050,
+      "margin_to_master_opening_4000_ms": -50,
+      "margin_to_first_slave_lease_3000_ms": -1050
+    },
+    {
+      "active_nodes": 32,
+      "ideal_last_start_submission_ms": 4650,
+      "margin_to_master_opening_4000_ms": -650,
+      "margin_to_first_slave_lease_3000_ms": -1650
+    }
+  ],
+  "hello_query_cycle_data_pdus": 9,
+  "steady_state_nominal_load": [
+    {
+      "registered_nodes": 1,
+      "active_nodes": 1,
+      "online_lease_group_receivers": 1,
+      "lease_data_pdus_per_second": 2,
+      "lease_ack_data_pdus_per_second": 2,
+      "summary_data_pdus_per_second": 1.5,
+      "hello_query_data_pdus_per_second": 0.9,
+      "total_nominal_data_pdus_per_second": 6.4,
+      "after_network_count_1_nominal_repeats": 12.8,
+      "fixed_group_sar_extra_data_pdus_per_second": 8,
+      "including_fixed_group_sar_data_pdus_per_second": 14.4,
+      "including_fixed_group_sar_after_network_count_1": 28.8
+    },
+    {
+      "registered_nodes": 4,
+      "active_nodes": 1,
+      "online_lease_group_receivers": 4,
+      "lease_data_pdus_per_second": 2,
+      "lease_ack_data_pdus_per_second": 8,
+      "summary_data_pdus_per_second": 1.5,
+      "hello_query_data_pdus_per_second": 3.6,
+      "total_nominal_data_pdus_per_second": 15.1,
+      "after_network_count_1_nominal_repeats": 30.2,
+      "fixed_group_sar_extra_data_pdus_per_second": 8,
+      "including_fixed_group_sar_data_pdus_per_second": 23.1,
+      "including_fixed_group_sar_after_network_count_1": 46.2
+    },
+    {
+      "registered_nodes": 5,
+      "active_nodes": 1,
+      "online_lease_group_receivers": 5,
+      "lease_data_pdus_per_second": 2,
+      "lease_ack_data_pdus_per_second": 10,
+      "summary_data_pdus_per_second": 1.5,
+      "hello_query_data_pdus_per_second": 4.5,
+      "total_nominal_data_pdus_per_second": 18.0,
+      "after_network_count_1_nominal_repeats": 36.0,
+      "fixed_group_sar_extra_data_pdus_per_second": 8,
+      "including_fixed_group_sar_data_pdus_per_second": 26.0,
+      "including_fixed_group_sar_after_network_count_1": 52.0
+    },
+    {
+      "registered_nodes": 8,
+      "active_nodes": 1,
+      "online_lease_group_receivers": 8,
+      "lease_data_pdus_per_second": 2,
+      "lease_ack_data_pdus_per_second": 16,
+      "summary_data_pdus_per_second": 1.5,
+      "hello_query_data_pdus_per_second": 7.2,
+      "total_nominal_data_pdus_per_second": 26.7,
+      "after_network_count_1_nominal_repeats": 53.4,
+      "fixed_group_sar_extra_data_pdus_per_second": 8,
+      "including_fixed_group_sar_data_pdus_per_second": 34.7,
+      "including_fixed_group_sar_after_network_count_1": 69.4
+    },
+    {
+      "registered_nodes": 16,
+      "active_nodes": 1,
+      "online_lease_group_receivers": 16,
+      "lease_data_pdus_per_second": 2,
+      "lease_ack_data_pdus_per_second": 32,
+      "summary_data_pdus_per_second": 1.5,
+      "hello_query_data_pdus_per_second": 14.4,
+      "total_nominal_data_pdus_per_second": 49.9,
+      "after_network_count_1_nominal_repeats": 99.8,
+      "fixed_group_sar_extra_data_pdus_per_second": 8,
+      "including_fixed_group_sar_data_pdus_per_second": 57.9,
+      "including_fixed_group_sar_after_network_count_1": 115.8
+    },
+    {
+      "registered_nodes": 32,
+      "active_nodes": 1,
+      "online_lease_group_receivers": 32,
+      "lease_data_pdus_per_second": 2,
+      "lease_ack_data_pdus_per_second": 64,
+      "summary_data_pdus_per_second": 1.5,
+      "hello_query_data_pdus_per_second": 28.8,
+      "total_nominal_data_pdus_per_second": 96.3,
+      "after_network_count_1_nominal_repeats": 192.6,
+      "fixed_group_sar_extra_data_pdus_per_second": 8,
+      "including_fixed_group_sar_data_pdus_per_second": 104.3,
+      "including_fixed_group_sar_after_network_count_1": 208.6
+    },
+    {
+      "registered_nodes": 4,
+      "active_nodes": 4,
+      "online_lease_group_receivers": 4,
+      "lease_data_pdus_per_second": 2,
+      "lease_ack_data_pdus_per_second": 8,
+      "summary_data_pdus_per_second": 6.0,
+      "hello_query_data_pdus_per_second": 3.6,
+      "total_nominal_data_pdus_per_second": 19.6,
+      "after_network_count_1_nominal_repeats": 39.2,
+      "fixed_group_sar_extra_data_pdus_per_second": 8,
+      "including_fixed_group_sar_data_pdus_per_second": 27.6,
+      "including_fixed_group_sar_after_network_count_1": 55.2
+    },
+    {
+      "registered_nodes": 5,
+      "active_nodes": 5,
+      "online_lease_group_receivers": 5,
+      "lease_data_pdus_per_second": 2,
+      "lease_ack_data_pdus_per_second": 10,
+      "summary_data_pdus_per_second": 7.5,
+      "hello_query_data_pdus_per_second": 4.5,
+      "total_nominal_data_pdus_per_second": 24.0,
+      "after_network_count_1_nominal_repeats": 48.0,
+      "fixed_group_sar_extra_data_pdus_per_second": 8,
+      "including_fixed_group_sar_data_pdus_per_second": 32.0,
+      "including_fixed_group_sar_after_network_count_1": 64.0
+    },
+    {
+      "registered_nodes": 8,
+      "active_nodes": 8,
+      "online_lease_group_receivers": 8,
+      "lease_data_pdus_per_second": 2,
+      "lease_ack_data_pdus_per_second": 16,
+      "summary_data_pdus_per_second": 12.0,
+      "hello_query_data_pdus_per_second": 7.2,
+      "total_nominal_data_pdus_per_second": 37.2,
+      "after_network_count_1_nominal_repeats": 74.4,
+      "fixed_group_sar_extra_data_pdus_per_second": 8,
+      "including_fixed_group_sar_data_pdus_per_second": 45.2,
+      "including_fixed_group_sar_after_network_count_1": 90.4
+    },
+    {
+      "registered_nodes": 16,
+      "active_nodes": 16,
+      "online_lease_group_receivers": 16,
+      "lease_data_pdus_per_second": 2,
+      "lease_ack_data_pdus_per_second": 32,
+      "summary_data_pdus_per_second": 24.0,
+      "hello_query_data_pdus_per_second": 14.4,
+      "total_nominal_data_pdus_per_second": 72.4,
+      "after_network_count_1_nominal_repeats": 144.8,
+      "fixed_group_sar_extra_data_pdus_per_second": 8,
+      "including_fixed_group_sar_data_pdus_per_second": 80.4,
+      "including_fixed_group_sar_after_network_count_1": 160.8
+    },
+    {
+      "registered_nodes": 24,
+      "active_nodes": 24,
+      "online_lease_group_receivers": 24,
+      "lease_data_pdus_per_second": 2,
+      "lease_ack_data_pdus_per_second": 48,
+      "summary_data_pdus_per_second": 36.0,
+      "hello_query_data_pdus_per_second": 21.6,
+      "total_nominal_data_pdus_per_second": 107.6,
+      "after_network_count_1_nominal_repeats": 215.2,
+      "fixed_group_sar_extra_data_pdus_per_second": 8,
+      "including_fixed_group_sar_data_pdus_per_second": 115.6,
+      "including_fixed_group_sar_after_network_count_1": 231.2
+    },
+    {
+      "registered_nodes": 32,
+      "active_nodes": 5,
+      "online_lease_group_receivers": 32,
+      "lease_data_pdus_per_second": 2,
+      "lease_ack_data_pdus_per_second": 64,
+      "summary_data_pdus_per_second": 7.5,
+      "hello_query_data_pdus_per_second": 28.8,
+      "total_nominal_data_pdus_per_second": 102.3,
+      "after_network_count_1_nominal_repeats": 204.6,
+      "fixed_group_sar_extra_data_pdus_per_second": 8,
+      "including_fixed_group_sar_data_pdus_per_second": 110.3,
+      "including_fixed_group_sar_after_network_count_1": 220.6
+    },
+    {
+      "registered_nodes": 32,
+      "active_nodes": 32,
+      "online_lease_group_receivers": 32,
+      "lease_data_pdus_per_second": 2,
+      "lease_ack_data_pdus_per_second": 64,
+      "summary_data_pdus_per_second": 48.0,
+      "hello_query_data_pdus_per_second": 28.8,
+      "total_nominal_data_pdus_per_second": 142.8,
+      "after_network_count_1_nominal_repeats": 285.6,
+      "fixed_group_sar_extra_data_pdus_per_second": 8,
+      "including_fixed_group_sar_data_pdus_per_second": 150.8,
+      "including_fixed_group_sar_after_network_count_1": 301.6
+    }
+  ],
+  "proposed_unicast_optimized_load": [
+    {
+      "registered_nodes": 5,
+      "active_nodes": 1,
+      "unicast_lease_data_pdus_per_second": 2,
+      "lease_ack_data_pdus_per_second": 2,
+      "summary_data_pdus_per_second": 1.5,
+      "hello_reply_data_pdus_per_second": 1.5,
+      "total_data_pdus_per_second_without_extra_unicast_retransmits": 7.0,
+      "after_network_count_1": 14.0
+    },
+    {
+      "registered_nodes": 5,
+      "active_nodes": 5,
+      "unicast_lease_data_pdus_per_second": 10,
+      "lease_ack_data_pdus_per_second": 10,
+      "summary_data_pdus_per_second": 7.5,
+      "hello_reply_data_pdus_per_second": 1.5,
+      "total_data_pdus_per_second_without_extra_unicast_retransmits": 29.0,
+      "after_network_count_1": 58.0
+    },
+    {
+      "registered_nodes": 32,
+      "active_nodes": 5,
+      "unicast_lease_data_pdus_per_second": 10,
+      "lease_ack_data_pdus_per_second": 10,
+      "summary_data_pdus_per_second": 7.5,
+      "hello_reply_data_pdus_per_second": 9.6,
+      "total_data_pdus_per_second_without_extra_unicast_retransmits": 37.1,
+      "after_network_count_1": 74.2
+    }
+  ],
+  "necessary_window_capacity_check": {
+    "scope": "Illustrative mean-load check only; passing is necessary, not sufficient. Queue bursts, deadlines and nonpreemptible SAR still matter.",
+    "master_mean_sar_lifetime_must_be_less_than_ms": 400,
+    "slave_mean_sar_lifetime_must_be_less_than_ms": 625,
+    "steady_state_rates_exclude_phase_event_bursts": true,
+    "scenarios": [
+      {
+        "illustrative_mean_sar_lifetime_ms": 100,
+        "master_required_segmented_rate_per_second": 5,
+        "master_window_2_necessary_utilization": 0.25,
+        "slave_required_segmented_rate_per_second": 1.6,
+        "slave_window_1_necessary_utilization": 0.16,
+        "master_has_strict_mean_capacity_margin": true,
+        "slave_has_strict_mean_capacity_margin": true
+      },
+      {
+        "illustrative_mean_sar_lifetime_ms": 200,
+        "master_required_segmented_rate_per_second": 5,
+        "master_window_2_necessary_utilization": 0.5,
+        "slave_required_segmented_rate_per_second": 1.6,
+        "slave_window_1_necessary_utilization": 0.32,
+        "master_has_strict_mean_capacity_margin": true,
+        "slave_has_strict_mean_capacity_margin": true
+      },
+      {
+        "illustrative_mean_sar_lifetime_ms": 300,
+        "master_required_segmented_rate_per_second": 5,
+        "master_window_2_necessary_utilization": 0.75,
+        "slave_required_segmented_rate_per_second": 1.6,
+        "slave_window_1_necessary_utilization": 0.48,
+        "master_has_strict_mean_capacity_margin": true,
+        "slave_has_strict_mean_capacity_margin": true
+      },
+      {
+        "illustrative_mean_sar_lifetime_ms": 400,
+        "master_required_segmented_rate_per_second": 5,
+        "master_window_2_necessary_utilization": 1.0,
+        "slave_required_segmented_rate_per_second": 1.6,
+        "slave_window_1_necessary_utilization": 0.64,
+        "master_has_strict_mean_capacity_margin": false,
+        "slave_has_strict_mean_capacity_margin": true
+      },
+      {
+        "illustrative_mean_sar_lifetime_ms": 550,
+        "master_required_segmented_rate_per_second": 5,
+        "master_window_2_necessary_utilization": 1.375,
+        "slave_required_segmented_rate_per_second": 1.6,
+        "slave_window_1_necessary_utilization": 0.88,
+        "master_has_strict_mean_capacity_margin": false,
+        "slave_has_strict_mean_capacity_margin": true
+      },
+      {
+        "illustrative_mean_sar_lifetime_ms": 1000,
+        "master_required_segmented_rate_per_second": 5,
+        "master_window_2_necessary_utilization": 2.5,
+        "slave_required_segmented_rate_per_second": 1.6,
+        "slave_window_1_necessary_utilization": 1.6,
+        "master_has_strict_mean_capacity_margin": false,
+        "slave_has_strict_mean_capacity_margin": false
+      },
+      {
+        "illustrative_mean_sar_lifetime_ms": 2200,
+        "master_required_segmented_rate_per_second": 5,
+        "master_window_2_necessary_utilization": 5.5,
+        "slave_required_segmented_rate_per_second": 1.6,
+        "slave_window_1_necessary_utilization": 3.52,
+        "master_has_strict_mean_capacity_margin": false,
+        "slave_has_strict_mean_capacity_margin": false
+      }
+    ]
+  },
+  "lease_ack_freshness_counterexamples": [
+    {
+      "issued_at_ms": 0,
+      "hypothetical_slave_accepts_at_ms": 100,
+      "ack_received_at_ms": 900,
+      "accepted_under_proposed_2400_ms_proof_window": true,
+      "conservative_master_proof_expires_at_ms": 2400,
+      "incorrect_rx_time_based_expiry_ms": 3300,
+      "hypothetical_slave_lease_expires_at_ms": 3100,
+      "incorrect_master_expiry_after_slave_ms": 200
+    },
+    {
+      "issued_at_ms": 0,
+      "hypothetical_slave_accepts_at_ms": 100,
+      "ack_received_at_ms": 1100,
+      "accepted_under_proposed_2400_ms_proof_window": true,
+      "conservative_master_proof_expires_at_ms": 2400,
+      "incorrect_rx_time_based_expiry_ms": 3500,
+      "hypothetical_slave_lease_expires_at_ms": 3100,
+      "incorrect_master_expiry_after_slave_ms": 400
+    },
+    {
+      "issued_at_ms": 0,
+      "hypothetical_slave_accepts_at_ms": 100,
+      "ack_received_at_ms": 1800,
+      "accepted_under_proposed_2400_ms_proof_window": true,
+      "conservative_master_proof_expires_at_ms": 2400,
+      "incorrect_rx_time_based_expiry_ms": 4200,
+      "hypothetical_slave_lease_expires_at_ms": 3100,
+      "incorrect_master_expiry_after_slave_ms": 1100
+    },
+    {
+      "issued_at_ms": 0,
+      "hypothetical_slave_accepts_at_ms": 100,
+      "ack_received_at_ms": 2500,
+      "accepted_under_proposed_2400_ms_proof_window": false,
+      "conservative_master_proof_expires_at_ms": 2400,
+      "incorrect_rx_time_based_expiry_ms": 4900,
+      "hypothetical_slave_lease_expires_at_ms": 3100,
+      "incorrect_master_expiry_after_slave_ms": 1800
+    }
+  ],
+  "five_channel_assessment": {
+    "scope": "Arithmetic scenarios, not measured peaks or a probability of failure.",
+    "ideal_start_submission_times_ms": [
+      0,
+      150,
+      300,
+      450,
+      600
+    ],
+    "startup_first_exchange_data_pdus": {
+      "assumption": "One Prepare/Status/EventAck and one Start/Status/EventAck per node; no retries, Hello, Summary or additional phase events.",
+      "preparing": 40,
+      "opening": 30,
+      "preparing_master_segmented_message_submissions": 10,
+      "submission_count_is_not_simultaneous_occupancy": true
+    },
+    "steady_state_five_online_five_active": {
+      "master_segmented_messages_per_second": 1.5,
+      "each_slave_segmented_messages_per_second": 1.7,
+      "master_data_pdus_per_second": 4.0,
+      "each_slave_data_pdus_per_second": 4.0
+    },
+    "single_remaining_unconfirmed_node": {
+      "assumption": "A new segmented Status for every 150 ms retry; no context released, no other traffic, first submission at t=0.",
+      "tx_contexts_per_device": 8,
+      "eighth_submission_ms": 1050,
+      "ninth_submission_ms": 1200,
+      "interpretation": "The ninth submission can fail with EBUSY under this no-release condition; not a prediction that every run fails at this time."
+    }
+  },
+  "duplicate_start_amplification": {
+    "assumption": "One forced Status and one EventAck for each 150 ms retry; all delivered.",
+    "status_and_event_ack_data_pdus_per_second": 33.333,
+    "including_start_data_pdus_per_second": 40.0
+  },
+  "metering": {
+    "k_pulses_per_litre": 5880,
+    "target_500_ml_pulses": 2940,
+    "nominal_ml_per_pulse": 0.170068
+  }
+}

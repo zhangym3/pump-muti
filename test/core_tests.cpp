@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
+#include <deque>
 #include <limits>
 using namespace pump;
 #define CHECK(...) do { if (!(__VA_ARGS__)) { std::fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #__VA_ARGS__); std::exit(1); } } while (false)
@@ -23,9 +24,20 @@ PumpConfig pumpConfig() {
 struct FakeMesh : MeshSender {
   std::vector<Packet> sent;
   FakePump *pump = nullptr;
+  uint32_t now = 100, sequence = 0;
+  std::deque<MeshSubmission> pending;
+  JobKey fenced;
+  bool healthy() const override { return true; }
+  void fence(JobKey key) override { fenced = key; CHECK(!pump || !pump->on); }
+  bool takeSubmission(MeshSubmission &out) override {
+    if (pending.empty()) return false;
+    out=pending.front(); pending.pop_front(); return true;
+  }
   bool send(const Packet &p) override {
     if (p.op == Op::Close && pump) CHECK(!pump->on);
-    sent.push_back(p); return true;
+    Packet committed=p;
+    if (p.op == Op::Lease) { const uint32_t seq=++sequence; for (unsigned i=0;i<4;++i) committed.bytes[8+i]=uint8_t(seq>>(8*i)); }
+    sent.push_back(committed); pending.push_back({committed,now,0,true}); pending.push_back({committed,now,0,false}); return true;
   }
   size_t count(Op op) const { size_t n = 0; for (auto &p : sent) if (p.op == op) ++n; return n; }
 };
@@ -86,44 +98,63 @@ struct ScheduleFixture {
     net.pump = &io; pump.boot(0); CHECK(pump.reset(0) == Reply::Ok);
     for (size_t i=0;i<MaxNodes;++i) { CHECK(scheduler.registerNode(i,{uint16_t(i+2),1000,1}) == Reply::Ok); scheduler.hello(uint16_t(i+2),1000,1,true,100); }
   }
+  void tick(uint32_t now) {
+    net.now=now;
+    // Simulated compatible peers answer capability probes only. Lease ACKs
+    // remain explicit so these tests cannot silently authorize a pump.
+    for (unsigned pass=0;pass<3;++pass) {
+      scheduler.tick(now);
+      for (const auto &p:net.sent) if (p.op==Op::CapabilitiesGet) {
+        Reader r{p}; scheduler.capabilities(p.peer,r.u32(),ProtocolRevision,RequiredFeatures,ApprovedSlaveBuildIds[0],now);
+      }
+    }
+  }
+  void prove(uint32_t now) {
+    tick(now); scheduler.submissions(now);
+    for (const auto &p:net.sent) if (p.op==Op::Lease) {
+      Reader r{p}; const auto k=r.key(); const auto seq=r.u32();
+      scheduler.leaseAck(p.peer,k,seq,Reply::Ok,now);
+    }
+    tick(now);
+  }
   void status(size_t i, Phase phase, Reason reason = Reason::None, uint32_t revision = 1, uint32_t now = 200) {
     ValveStatus s; s.key = {1,1}; s.k = 1000; s.phase = phase; s.reason = reason; s.revision = revision;
     s.valveCommand = phase == Phase::Opening || phase == Phase::Running; s.quiet = phase == Phase::Done;
     if (phase == Phase::Done) s.pulses = 100;
-    scheduler.status(uint16_t(i+2),s,now);
+    tick(now); scheduler.status(uint16_t(i+2),s,now);
   }
 };
 void scheduler_order_and_completion() {
   ScheduleFixture f; CHECK(f.scheduler.check(1,100,10000,100) == Reply::Ok);
-  f.scheduler.begin({1,1},1,100,10000,100); f.scheduler.tick(150); CHECK(f.net.count(Op::Prepare) == 1 && !f.io.on);
-  f.status(0,Phase::Prepared); f.scheduler.tick(200); CHECK(!f.io.on);
-  f.scheduler.tick(350); CHECK(f.net.count(Op::Start) == 1 && !f.io.on);
-  f.status(0,Phase::Opening,Reason::None,2,400); f.scheduler.tick(400); CHECK(f.io.on);
-  f.status(0,Phase::Settling,Reason::Target,3,450); f.scheduler.tick(450); CHECK(!f.io.on);
-  f.status(0,Phase::Done,Reason::Target,4,950); f.pump.tick(950); f.scheduler.tick(950);
+  f.scheduler.begin({1,1},1,100,10000,100); f.tick(150); CHECK(f.net.count(Op::Prepare) == 1 && !f.io.on);
+  f.status(0,Phase::Prepared); f.tick(200); CHECK(!f.io.on);
+  f.tick(350); CHECK(f.net.count(Op::Start) == 1 && !f.io.on);
+  f.status(0,Phase::Opening,Reason::None,2,400); f.tick(400); CHECK(!f.io.on); f.prove(400); CHECK(f.io.on);
+  f.status(0,Phase::Settling,Reason::Target,3,450); f.tick(450); CHECK(!f.io.on);
+  f.status(0,Phase::Done,Reason::Target,4,950); f.pump.tick(950); f.tick(950);
   CHECK(f.scheduler.report().phase == SchedulePhase::Complete && f.scheduler.report().complete == 1);
 }
 void scheduler_cancel_retries_and_timeout() {
   ScheduleFixture f; f.scheduler.begin({1,1},1,100,10000,100); f.scheduler.stop(Reason::Manual,200);
   CHECK(f.net.count(Op::Close) == 1);
-  for (uint32_t t=205;t<10300;t+=5) { if (t % 100 == 0) f.scheduler.stop(Reason::Manual,t); f.pump.tick(t); f.scheduler.tick(t); }
+  for (uint32_t t=205;t<10300;t+=5) { if (t % 100 == 0) f.scheduler.stop(Reason::Manual,t); f.pump.tick(t); f.tick(t); }
   CHECK(f.net.count(Op::Close) >= 10);
   CHECK(!f.scheduler.active() && f.scheduler.report().unknown == 1 && !f.io.on);
 }
 void scheduler_faults_and_ordering() {
   ScheduleFixture f; f.scheduler.begin({1,1},1,100,10000,100);
-  f.status(0,Phase::Prepared); f.scheduler.tick(200); f.status(0,Phase::Opening,Reason::None,2,250); f.scheduler.tick(250); CHECK(f.io.on);
+  f.status(0,Phase::Prepared); f.tick(200); f.status(0,Phase::Opening,Reason::None,2,250); f.tick(250); f.prove(250); CHECK(f.io.on);
   f.status(0,Phase::Prepared,Reason::None,1,260); CHECK(f.scheduler.node(0).status.phase == Phase::Opening);
   f.status(0,Phase::Settling,Reason::NoFlow,3,300); CHECK(!f.io.on && f.net.count(Op::Close) == 1);
-  f.status(0,Phase::Fault,Reason::NoFlow,4,800); f.pump.tick(800); f.scheduler.tick(800);
+  f.status(0,Phase::Fault,Reason::NoFlow,4,800); f.pump.tick(800); f.tick(800);
   CHECK(f.scheduler.report().phase == SchedulePhase::Failed);
 }
 void lease_acknowledgements_and_timeout() {
   ScheduleFixture acknowledged; acknowledged.scheduler.begin({1,1},1,100,10000,100);
-  acknowledged.status(0,Phase::Prepared); acknowledged.scheduler.tick(200);
-  acknowledged.scheduler.tick(350); acknowledged.status(0,Phase::Opening,Reason::None,2,400);
-  acknowledged.scheduler.tick(400); CHECK(acknowledged.io.on);
-  acknowledged.scheduler.tick(401);
+  acknowledged.status(0,Phase::Prepared); acknowledged.tick(200);
+  acknowledged.tick(350); acknowledged.status(0,Phase::Opening,Reason::None,2,400);
+  acknowledged.tick(400); CHECK(!acknowledged.io.on);
+  acknowledged.tick(401);
   CHECK(acknowledged.net.count(Op::Lease) == 1);
   Reader lease{acknowledged.net.sent.back()}; CHECK(lease.key() == JobKey{1,1});
   const uint32_t sequence = lease.u32(); CHECK(lease.done() && sequence != 0);
@@ -132,14 +163,14 @@ void lease_acknowledgements_and_timeout() {
   CHECK(!acknowledged.scheduler.leaseAck(2,{1,1},sequence+1,Reply::Ok,450));
   CHECK(acknowledged.scheduler.leaseAck(2,{1,1},sequence,Reply::Ok,450));
   CHECK(!acknowledged.scheduler.leaseAck(2,{1,1},sequence,Reply::Ok,451));
-  CHECK(acknowledged.io.on);
+  acknowledged.tick(450); CHECK(acknowledged.io.on);
 
   ScheduleFixture lost; lost.scheduler.begin({1,1},1,100,10000,100);
-  lost.status(0,Phase::Prepared); lost.scheduler.tick(200); lost.scheduler.tick(350);
-  lost.status(0,Phase::Opening,Reason::None,2,400); lost.scheduler.tick(400);
-  for (uint32_t now=401; now<=2750; now+=50) { lost.pump.tick(now); lost.scheduler.tick(now); }
-  CHECK(lost.io.on);
-  lost.pump.tick(2800); lost.scheduler.tick(2800);
+  lost.status(0,Phase::Prepared); lost.tick(200); lost.tick(350);
+  lost.status(0,Phase::Opening,Reason::None,2,400); lost.tick(400);
+  for (uint32_t now=401; now<=2750; now+=50) { lost.pump.tick(now); lost.tick(now); }
+  CHECK(!lost.io.on);
+  lost.pump.tick(2800); lost.tick(2800);
   CHECK(!lost.io.on && lost.scheduler.report().phase == SchedulePhase::Draining);
 }
 void rejected_commands_and_late_terminal_reconciliation() {
@@ -169,10 +200,10 @@ void thirty_two_nodes_and_batches() {
   f.scheduler.begin({1,1},0xffffffff,100,10000,100);
   uint32_t now = 100;
   for (size_t i=0;i<32;++i) {
-    f.status(i,Phase::Prepared,Reason::None,1,now); f.scheduler.tick(now);
-    f.status(i,Phase::Done,Reason::Target,3,now+10); f.scheduler.tick(now+10); f.scheduler.tick(now+20);
+    f.status(i,Phase::Prepared,Reason::None,1,now); f.tick(now);
+    f.status(i,Phase::Done,Reason::Target,3,now+10); f.tick(now+10); f.tick(now+20);
     now += 50;
-    if (i < 31) f.scheduler.tick(now);
+    if (i < 31) f.tick(now);
   }
   CHECK(f.scheduler.report().phase == SchedulePhase::Complete && f.scheduler.report().complete == 0xffffffff);
   CHECK(f.io.starts == 0); // Already delivered by residual pressure: never start the pump.
@@ -182,7 +213,7 @@ void telemetry_cannot_control_outputs() {
   CHECK(!f.scheduler.summary(2,{2,1},100,1,210));
   CHECK(f.scheduler.summary(2,{1,1},100,1,210));
   CHECK(!f.scheduler.summary(2,{1,1},50,1,220));
-  f.scheduler.tick(220); CHECK(f.scheduler.report().phase == SchedulePhase::Opening && !f.io.on);
+  f.tick(220); CHECK(f.scheduler.report().phase == SchedulePhase::Opening && !f.io.on);
   CHECK(f.scheduler.node(0).telemetryPulses == 100 && f.scheduler.node(0).status.pulses == 0);
   CHECK(f.scheduler.volume().ml == 100 && f.scheduler.volume().measured == 1);
 }
@@ -208,14 +239,14 @@ void request_parser_and_replay() {
 }
 void reboot_volume_is_unknown() {
   ScheduleFixture f; f.scheduler.begin({1,1},1,100,10000,100);
-  f.status(0,Phase::Prepared,Reason::None,17,150); f.scheduler.tick(150);
-  f.status(0,Phase::Opening,Reason::None,18,160); f.scheduler.tick(160); CHECK(f.io.on);
+  f.status(0,Phase::Prepared,Reason::None,17,150); f.tick(150);
+  f.status(0,Phase::Opening,Reason::None,18,160); f.tick(160); f.prove(160); CHECK(f.io.on);
   // Remote reboot report, independent of the slave controller implementation.
   ValveStatus reboot; reboot.key = {1,1}; reboot.k = 1000; reboot.revision = 33;
   reboot.phase = Phase::Fault; reboot.reason = Reason::Reboot; reboot.truncated = true;
   f.scheduler.status(2,reboot,200);
   f.status(0,Phase::Running,Reason::None,19,201);
-  f.pump.tick(200); f.scheduler.tick(200);
+  f.pump.tick(200); f.tick(200);
   CHECK(f.scheduler.report().phase == SchedulePhase::Failed && f.scheduler.report().unknown == 1);
   CHECK(f.scheduler.node(0).status.reason == Reason::Reboot && !f.io.on);
   CHECK(f.scheduler.volume().measured == 0);
@@ -381,19 +412,19 @@ void individual_scheduler_prepares_each_slot_and_retains_global_limit() {
   CHECK(f.scheduler.check(0x80000001,300,60000,100,plan) == Reply::Invalid);
   CHECK(f.scheduler.check(0x80000001,0,240001,100,plan) == Reply::Invalid);
   f.scheduler.begin({1,1},0x80000001,0,60000,100,plan);
-  f.scheduler.tick(150);
+  f.tick(150);
   auto p = f.net.sent.back(); Reader first{p}; CHECK(p.op == Op::Prepare && p.peer == 2);
   CHECK(first.key() == JobKey{1,1}); CHECK(first.u32() == 300 && first.u32() == 300);
   CHECK(first.u32() == 1000 && first.u32() == 1 && first.u32() == 60000 && first.done());
-  f.status(0,Phase::Prepared,Reason::None,1,200); f.scheduler.tick(200);
-  f.status(0,Phase::Done,Reason::Target,3,210); f.scheduler.tick(210); f.scheduler.tick(220);
-  f.scheduler.tick(260); f.scheduler.tick(310);
+  f.status(0,Phase::Prepared,Reason::None,1,200); f.tick(200);
+  f.status(0,Phase::Done,Reason::Target,3,210); f.tick(210); f.tick(220);
+  f.tick(260); f.tick(310);
   p = f.net.sent.back(); Reader second{p}; CHECK(p.op == Op::Prepare && p.peer == 33);
   CHECK(second.key() == JobKey{1,1}); CHECK(second.u32() == 2000 && second.u32() == 2000);
   CHECK(second.u32() == 1000 && second.u32() == 1 && second.u32() == 60000 && second.done());
   // The complete plan is already resident in the master; no second phone command is required.
-  f.status(31,Phase::Prepared,Reason::None,1,350); f.scheduler.tick(350);
-  f.status(31,Phase::Done,Reason::Target,3,360); f.scheduler.tick(360); f.scheduler.tick(370);
+  f.status(31,Phase::Prepared,Reason::None,1,350); f.tick(350);
+  f.status(31,Phase::Done,Reason::Target,3,360); f.tick(360); f.tick(370);
   CHECK(f.scheduler.report().phase == SchedulePhase::Complete && f.scheduler.report().complete == 0x80000001);
   CHECK(!f.io.on && f.io.starts == 0);
 }
@@ -404,7 +435,7 @@ void persistent_v1_migration_preserves_identity_results_and_plan_replay() {
   old.lastResults[31].key = {111,19}; old.lastResults[31].pulses = 1234;
   PersistentState upgraded;
   CHECK(decodePersistentState(&old,sizeof(old),42,upgraded));
-  CHECK(upgraded.format == 2 && upgraded.epoch == 111 && upgraded.jobCounter == 19 && upgraded.gatewayPin == old.gatewayPin);
+  CHECK(upgraded.format == 3 && upgraded.lastJob.reason == Reason::None && upgraded.epoch == 111 && upgraded.jobCounter == 19 && upgraded.gatewayPin == old.gatewayPin);
   CHECK(upgraded.nodes[31].address == 33 && upgraded.nodes[31].version == 2 && upgraded.clients[15].sequence == 99);
   CHECK(upgraded.clients[15].ml == 1000000 && upgraded.lastJob.key == old.lastJob.key && upgraded.lastResults[31].pulses == 1234);
   for (auto &amounts : upgraded.clientAmounts) for (auto v : amounts) CHECK(v == 0);
@@ -418,6 +449,106 @@ void persistent_v1_migration_preserves_identity_results_and_plan_replay() {
   CHECK(!decodePersistentState(&old,sizeof(old),43,restored));
   upgraded.clientAmounts[15][31] = 0; CHECK(!decodePersistentState(&upgraded,sizeof(upgraded),42,restored));
   old.format = 2; CHECK(!decodePersistentState(&old,sizeof(old),42,restored));
+}
+void lease_proof_age_and_boundary_matrix() {
+  for (uint32_t age : {900U,1100U,1800U,2500U}) {
+    ScheduleFixture f; f.scheduler.begin({1,1},1,100,10000,100);
+    f.status(0,Phase::Prepared,Reason::None,1,150); f.tick(150);
+    f.status(0,Phase::Opening,Reason::None,2,160); f.tick(160);
+    const auto record=f.scheduler.node(0).leases[0]; CHECK(record.accepted && record.sequence);
+    CHECK(!f.scheduler.leaseAck(3,{1,1},record.sequence,Reply::Ok,160));
+    CHECK(!f.scheduler.leaseAck(2,{1,2},record.sequence,Reply::Ok,160));
+    CHECK(!f.scheduler.leaseAck(2,{1,1},record.sequence+999,Reply::Ok,160));
+    const auto now=record.issuedAt+age;
+    CHECK(f.scheduler.leaseAck(2,{1,1},record.sequence,Reply::Ok,now)==(age<2400));
+    f.tick(now); CHECK(f.io.on==(age<=1000));
+    if (age<2400) {
+      CHECK(f.scheduler.node(0).leaseAckAt==record.issuedAt);
+      CHECK(!f.scheduler.leaseAck(2,{1,1},record.sequence,Reply::Ok,now+1));
+      CHECK(f.scheduler.node(0).leaseAckAt==record.issuedAt);
+    }
+  }
+  ScheduleFixture f; f.scheduler.begin({1,1},1,100,10000,100);
+  f.status(0,Phase::Prepared,Reason::None,1,150); f.tick(150);
+  f.status(0,Phase::Opening,Reason::None,2,160); f.prove(160); CHECK(f.io.on);
+  const auto issued=f.scheduler.node(0).leaseAckAt;
+  for(uint32_t t=issued+200;t<issued+2400;t+=200){f.pump.tick(t);f.tick(t);CHECK(f.io.on);}
+  f.tick(issued+2399);CHECK(f.io.on);f.tick(issued+2400);
+  CHECK(!f.io.on && f.scheduler.report().reason==Reason::Lease && f.net.fenced==JobKey{1,1});
+}
+void early_ack_commit_and_rejection_matrix() {
+  for (bool reject : {false,true}) {
+    ScheduleFixture f; f.scheduler.begin({1,1},1,100,10000,100);
+    f.status(0,Phase::Prepared,Reason::None,1,150); f.tick(150);
+    f.status(0,Phase::Opening,Reason::None,2,160);
+    f.net.now=160; f.scheduler.tick(160);
+    CHECK(f.net.pending.size()==2);
+    const auto accepted=f.net.pending.back(); f.net.pending.pop_back();
+    Reader r{accepted.packet};const auto key=r.key();const auto seq=r.u32();
+    CHECK(!f.scheduler.leaseAck(2,key,seq,Reply::Ok,160)); // not committed in ledger yet
+    f.scheduler.submissions(160);
+    CHECK(!f.scheduler.leaseAck(2,key,seq,Reply::Ok,170));
+    CHECK(!f.scheduler.node(0).leaseAckSeen);
+    auto result=accepted;result.error=reject?-12:0;f.net.pending.push_back(result);
+    f.scheduler.submissions(180);f.scheduler.tick(180);
+    CHECK(f.io.on==!reject);
+    if(reject)CHECK(f.scheduler.report().reason==Reason::Transport);
+    else CHECK(f.scheduler.node(0).leaseAckAt==160);
+  }
+  ScheduleFixture f;f.scheduler.begin({1,1},1,100,10000,100);f.tick(100);
+  f.status(0,Phase::Prepared,Reason::None,1,150);f.tick(150);
+  f.tick(450);f.tick(1050);f.tick(2050);CHECK(!f.io.on && f.net.count(Op::Start)>=3);
+  f.tick(2550);CHECK(f.scheduler.report().reason==Reason::Transport && !f.io.on);
+}
+void capability_identity_and_incompatibility_matrix() {
+  for (unsigned mode=0;mode<4;++mode) {
+    ScheduleFixture f; f.scheduler.begin({1,1},1,100,10000,100);
+    f.net.now=100; f.scheduler.tick(100);
+    CHECK(f.net.sent.size()==1 && f.net.sent.front().op==Op::CapabilitiesGet);
+    Reader r{f.net.sent.front()}; const auto nonce=r.u32();
+    CHECK(!f.scheduler.capabilities(3,nonce,ProtocolRevision,RequiredFeatures,ApprovedSlaveBuildIds[0],101));
+    CHECK(!f.scheduler.capabilities(2,nonce+1,ProtocolRevision,RequiredFeatures,ApprovedSlaveBuildIds[0],101));
+    CHECK(!f.scheduler.capabilities(99,nonce,ProtocolRevision,RequiredFeatures,ApprovedSlaveBuildIds[0],101));
+    CHECK(!f.scheduler.node(0).capable && !f.io.on);
+    CHECK(f.scheduler.capabilities(2,nonce,mode==0?1:ProtocolRevision,
+      mode==1?RequiredFeatures & ~1U:RequiredFeatures,mode==2?0:mode==3?0xdeadbeefU:ApprovedSlaveBuildIds[0],102));
+    CHECK(f.scheduler.report().reason==Reason::Protocol && !f.io.on);
+    CHECK(f.net.count(Op::Start)==0 && f.net.fenced==JobKey{1,1});
+  }
+  ScheduleFixture f; f.scheduler.begin({1,1},1,100,10000,100);
+  f.scheduler.tick(100); f.scheduler.tick(10100);
+  CHECK(f.scheduler.report().reason==Reason::Protocol && !f.io.on && f.net.count(Op::Start)==0);
+}
+void lease_cross_round_and_timer_wrap() {
+  const uint32_t start=UINT32_MAX-400;
+  ScheduleFixture f; f.scheduler.begin({1,1},1,100,10000,start);
+  f.tick(start+50); f.status(0,Phase::Prepared,Reason::None,1,start+50); f.tick(start+50);
+  f.status(0,Phase::Opening,Reason::None,2,start+60); f.prove(start+60); CHECK(f.io.on);
+  const auto issued=f.scheduler.node(0).leaseAckAt;
+  for (uint32_t delta=200;delta<=2000;delta+=200) { f.pump.tick(issued+delta); f.tick(issued+delta); CHECK(f.io.on); }
+  const auto &n=f.scheduler.node(0);
+  uint32_t previousSequence=0;
+  for (const auto &v:n.leases) if (v.issuedAt==issued+1000) previousSequence=v.sequence;
+  CHECK(previousSequence!=0); // A newer round has been committed, but this proof is still valid.
+  CHECK(f.scheduler.leaseAck(2,{1,1},previousSequence,Reply::Ok,issued+2050));
+  CHECK(f.scheduler.node(0).leaseAckAt==issued+1000);
+  CHECK(!f.scheduler.leaseAck(2,{1,1},previousSequence,Reply::Ok,issued+2100));
+  for (uint32_t delta=2200;delta<3400;delta+=200) { f.pump.tick(issued+delta); f.tick(issued+delta); CHECK(f.io.on); }
+  f.tick(issued+3399); CHECK(f.io.on); f.tick(issued+3400);
+  CHECK(!f.io.on && f.scheduler.report().reason==Reason::Lease);
+}
+void stop_reason_migration_and_late_target() {
+  PersistentState old;old.profile=42;old.format=2;old.lastJob.reason=Reason(255);
+  PersistentState migrated;CHECK(decodePersistentState(&old,sizeof(old),42,migrated));
+  CHECK(migrated.format==3 && migrated.lastJob.reason==Reason::None);
+  migrated.lastJob.reason=Reason::Lease;
+  PersistentState restored;CHECK(decodePersistentState(&migrated,sizeof(migrated),42,restored));
+  CHECK(restored.lastJob.reason==Reason::Lease);
+  migrated.lastJob.reason=Reason(255);CHECK(!decodePersistentState(&migrated,sizeof(migrated),42,restored));
+  ScheduleFixture f;f.scheduler.begin({1,1},1,100,10000,100);f.scheduler.stop(Reason::Transport,110);
+  f.status(0,Phase::Done,Reason::Target,5,120);f.tick(120);
+  CHECK(f.scheduler.report().phase==SchedulePhase::Failed && f.scheduler.report().failed==1);
+  CHECK(f.scheduler.report().reason==Reason::Transport && !f.io.on);
 }
 int main() {
   struct Test { const char *name; void (*run)(); } tests[] = {
@@ -436,7 +567,12 @@ int main() {
     {"dry test wrap failures and replay",dry_test_wrap_failure_and_replay},
     {"individual command parsing and durable replay",individual_request_and_durable_replay},
     {"individual targets in one autonomous job",individual_scheduler_prepares_each_slot_and_retains_global_limit},
-    {"format 1 to 2 storage migration",persistent_v1_migration_preserves_identity_results_and_plan_replay},
+    {"format 1 to 3 storage migration",persistent_v1_migration_preserves_identity_results_and_plan_replay},
+    {"lease proof age and exact protection boundary",lease_proof_age_and_boundary_matrix},
+    {"early ACK commit rejection and fixed bootstrap",early_ack_commit_and_rejection_matrix},
+    {"capability nonce source revision features and timeout",capability_identity_and_incompatibility_matrix},
+    {"lease cross round and timer wrap",lease_cross_round_and_timer_wrap},
+    {"format 2 to 3 stop reason and late Target",stop_reason_migration_and_late_target},
     {"wire protocol contract vectors",wire_contract_vectors}
   };
   for (auto &t : tests) { t.run(); std::printf("PASS %s\n",t.name); }

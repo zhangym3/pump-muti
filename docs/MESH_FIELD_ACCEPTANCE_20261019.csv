@@ -1,0 +1,1 @@
+run_id,scenario,concurrency,batch,channel,device_label,mesh_address,master_build,slave_build,job,target_ml,k_pulses_per_litre,target_pulses,close_pulses,final_pulses,tail_pulses,reported_ml,measured_ml,tolerance_ml,error_ml,master_stop_reason,slave_close_reason,quiet,truncated,first_pulse_ms,proof_max_age_ms,sar_p99_ms,lease_ack_p99_ms,raw_log,verdict,notes

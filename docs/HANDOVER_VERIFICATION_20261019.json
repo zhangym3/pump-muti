@@ -1,0 +1,193 @@
+{
+  "reviewDate": "2026-10-19",
+  "generatedUtc": "2026-10-19T11:04:04.803219+00:00",
+  "timezone": "Asia/Shanghai",
+  "scope": "Git fast-forward update and software verification; no flashing, NVS modification or hardware output commands.",
+  "projects": [
+    {
+      "project": "pump-muti",
+      "path": "D:\\pump\\pump-muti",
+      "branch": "main",
+      "head": "ad43f28bcef9ac4477d2c8428f000195e77d383c",
+      "upstream": "ad43f28bcef9ac4477d2c8428f000195e77d383c",
+      "remote": "https://github.com/zhangym3/pump-muti.git",
+      "manifestCreatedUtc": "2026-10-17T15:37:26.507062+00:00",
+      "hardwareValidated": false,
+      "images": [
+        {
+          "path": "pump_master/bootloader.bin",
+          "offset": "0x1000",
+          "bytes": 25952,
+          "sha256": "d7886770d61b75438ca12cbcc1cfd30e8a836d33f03ab8de1a18a684a43a86b1",
+          "actualSha256": "d7886770d61b75438ca12cbcc1cfd30e8a836d33f03ab8de1a18a684a43a86b1",
+          "matchesManifest": true
+        },
+        {
+          "path": "pump_master/partitions.bin",
+          "offset": "0x8000",
+          "bytes": 3072,
+          "sha256": "37f9719078927bf594a883c81ad80dd4e6d179c8db193fbded90851178aa39e7",
+          "actualSha256": "37f9719078927bf594a883c81ad80dd4e6d179c8db193fbded90851178aa39e7",
+          "matchesManifest": true
+        },
+        {
+          "path": "pump_master/firmware.bin",
+          "offset": "0x20000",
+          "bytes": 988864,
+          "sha256": "3fa717cb8335180dcd2e6755eb9097ddccda74d441c38749fc735912a6488b78",
+          "actualSha256": "3fa717cb8335180dcd2e6755eb9097ddccda74d441c38749fc735912a6488b78",
+          "matchesManifest": true
+        }
+      ],
+      "changedSources": [
+        "include/application.h",
+        "include/control_gateway.h",
+        "include/control_request.h",
+        "include/master_scheduler.h",
+        "include/protocol.h",
+        "include/pump_safety_controller.h",
+        "include/storage.h",
+        "platformio.ini",
+        "src/application.cpp",
+        "src/control_gateway.cpp",
+        "src/main.cpp",
+        "src/master_scheduler.cpp",
+        "src/mesh_management.cpp",
+        "src/mesh_transport.cpp",
+        "src/pump_safety_controller.cpp",
+        "src/storage.cpp"
+      ],
+      "unrecordedSources": [
+        "include/persistent_state.h"
+      ],
+      "sourceMatchesManifest": false,
+      "workingTreeStatus": [
+        "M HANDOVER.md",
+        " M README.md",
+        "?? docs/HANDOVER_20261017_HISTORY.md",
+        "?? docs/HANDOVER_VERIFICATION_20261019.json"
+      ]
+    },
+    {
+      "project": "pumpmutiapp",
+      "path": "D:\\pump\\pumpmutiapp",
+      "branch": "main",
+      "head": "4c8ea4a4169dc9805bd27d141e95c96b9c15d16f",
+      "upstream": "4c8ea4a4169dc9805bd27d141e95c96b9c15d16f",
+      "remote": "https://github.com/zhangym3/pump-muti-app.git",
+      "workingTreeStatus": []
+    },
+    {
+      "project": "pump-muti-slave",
+      "path": "D:\\pump\\pump-muti-slave",
+      "branch": "main",
+      "head": "56821a3fd071347f505d532620e7e4f628ebdbdf",
+      "upstream": "56821a3fd071347f505d532620e7e4f628ebdbdf",
+      "remote": "https://github.com/zhangym3/pump-muti-slave.git",
+      "manifestCreatedUtc": "2026-10-17T15:37:26.836745+00:00",
+      "hardwareValidated": false,
+      "images": [
+        {
+          "path": "valve_slave_c3/bootloader.bin",
+          "offset": "0x0",
+          "bytes": 20768,
+          "sha256": "956e5365d7aa312abac22b0d8b204d3128c27ad959b43e8c9df7e11bd1d98bab",
+          "actualSha256": "956e5365d7aa312abac22b0d8b204d3128c27ad959b43e8c9df7e11bd1d98bab",
+          "matchesManifest": true
+        },
+        {
+          "path": "valve_slave_c3/partitions.bin",
+          "offset": "0x8000",
+          "bytes": 3072,
+          "sha256": "37f9719078927bf594a883c81ad80dd4e6d179c8db193fbded90851178aa39e7",
+          "actualSha256": "37f9719078927bf594a883c81ad80dd4e6d179c8db193fbded90851178aa39e7",
+          "matchesManifest": true
+        },
+        {
+          "path": "valve_slave_c3/firmware.bin",
+          "offset": "0x20000",
+          "bytes": 962368,
+          "sha256": "f21dc259663095715e1d951a3947a6d9bd9db647951a6245121eb1ec004db46c",
+          "actualSha256": "f21dc259663095715e1d951a3947a6d9bd9db647951a6245121eb1ec004db46c",
+          "matchesManifest": true
+        }
+      ],
+      "changedSources": [
+        "include/application.h",
+        "include/board_profile.h",
+        "include/control_request.h",
+        "include/flow_job_controller.h",
+        "include/protocol.h",
+        "include/storage.h",
+        "platformio.ini",
+        "src/application.cpp",
+        "src/flow_job_controller.cpp",
+        "src/hardware.cpp",
+        "src/main.cpp",
+        "src/mesh_transport.cpp",
+        "src/storage.cpp"
+      ],
+      "unrecordedSources": [],
+      "sourceMatchesManifest": false,
+      "workingTreeStatus": [
+        "M platformio.ini"
+      ],
+      "localOverride": {
+        "path": "platformio.ini",
+        "committedUploadPort": "COM4",
+        "workingTreeUploadPort": "COM6",
+        "action": "Preserved existing working-tree override; not edited by this documentation task."
+      }
+    }
+  ],
+  "androidApk": {
+    "path": "D:\\pump\\pumpmutiapp\\app\\build\\outputs\\apk\\debug\\app-debug.apk",
+    "exists": true,
+    "sha256": "b5ec4f81eef1066b8a3025b42f98f1174ed050b8d71adefeb3459a23fac8f9e5",
+    "rebuiltThisSession": false,
+    "sourceMatch": "not established"
+  },
+  "checks": {
+    "masterHostTests": {
+      "result": "PASS",
+      "groups": 23,
+      "command": "python tools/run_host_tests.py --compiler .pio/host-tools/ziglang/zig.exe"
+    },
+    "slaveHostTests": {
+      "result": "PASS",
+      "command": "python tools/run_host_tests.py --compiler D:/pump/pump-muti/.pio/host-tools/ziglang/zig.exe"
+    },
+    "androidUnitTests": {
+      "result": "PASS",
+      "reports": 11,
+      "tests": 74,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "command": ".\\gradlew.bat :app:testDebugUnitTest --no-daemon --console=plain --max-workers=2",
+      "javaHome": "C:/Program Files/Android/Android Studio/jbr"
+    },
+    "roleBoundary": {
+      "result": "PASS",
+      "command": "python tools/verify_architecture.py",
+      "limitation": "Script expects sibling pump-muti-app, but this workspace uses pumpmutiapp; app scan is silently skipped. Supplementary scan below uses the actual app path."
+    },
+    "supplementaryAppBoundary": {
+      "path": "D:\\pump\\pumpmutiapp\\app\\src",
+      "forbiddenMarkersFound": [],
+      "result": "PASS"
+    },
+    "firmwareBuildThisSession": false,
+    "firmwarePackagingThisSession": false,
+    "androidAssembleThisSession": false,
+    "androidLintThisSession": false,
+    "androidInstrumentationThisSession": false,
+    "hardwareValidatedThisSession": false,
+    "documentation": {
+      "markdownLocalLinks": "PASS",
+      "evidenceJsonParse": "PASS",
+      "historyMatchesOriginalHeadDocument": "PASS (normalized line endings)",
+      "gitDiffCheck": "PASS"
+    }
+  }
+}

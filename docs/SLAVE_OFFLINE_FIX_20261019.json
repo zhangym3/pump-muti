@@ -1,0 +1,204 @@
+{
+  "date": "2026-10-19",
+  "kind": "offline_fix_software_evidence_not_hardware_acceptance",
+  "overall": "SOFTWARE_PASS_HARDWARE_PENDING",
+  "firmware_uploaded": false,
+  "serial_ports_opened": false,
+  "pump_or_valve_actuated": false,
+  "nvs_erased": false,
+  "production_max_concurrent": 1,
+  "business_recovery": "controlled restart required; no old task replay or automatic top-up",
+  "diagnostic_recovery": "all real tickets settled, 1/2/4/8s backoff, one in flight, explicit non-authorizing allowlist",
+  "missing_completion": "6000ms sticky restart requirement; late callbacks cannot clear it",
+  "first_fault_evidence": "immutable RAM snapshot; retained through trace drain; lost on restart",
+  "historical_first_trigger": "not captured; cannot distinguish SAR error, API/core rejection and LeaseAck expiry",
+  "builds": {
+    "master": {
+      "build_id": "4c3a56d9",
+      "source_sha256": "4c3a56d946f869cac5541b8c3bbf48922b852a7e4ca0b3b51f3a848e6b9d3c77",
+      "environment": "pump_master",
+      "chip": "esp32",
+      "sdk_patch_identity": "1b42ade610119dacd2fad891a49ec4c0d58b2286933f9967c31b5a958fa85467",
+      "static_size_bytes": {
+        "RAM": 58392,
+        "Flash": 1003424
+      },
+      "strong_symbols": [
+        "esp_ble_mesh_tracked_send_event",
+        "esp_ble_mesh_server_model_send_msg_tracked"
+      ],
+      "partitions": [
+        {
+          "name": "nvs",
+          "type": 1,
+          "subtype": 2,
+          "offset": "0x9000",
+          "size": 65536,
+          "flags": 0
+        },
+        {
+          "name": "phy_init",
+          "type": 1,
+          "subtype": 1,
+          "offset": "0x19000",
+          "size": 4096,
+          "flags": 0
+        },
+        {
+          "name": "factory",
+          "type": 0,
+          "subtype": 0,
+          "offset": "0x20000",
+          "size": 4063232,
+          "flags": 0
+        }
+      ],
+      "flash_files": {
+        "0x1000": "bootloader.bin",
+        "0x8000": "partitions.bin",
+        "0x20000": "firmware.bin"
+      },
+      "firmware_sha256": "9916a09dcd6fd84ee174912c715abf2ddca805590fbd91fb333c267b16d8e541",
+      "elf_sha256": "c28daab78a2b58f837c173d3fcf7e0ceb2f237c2927ff4115e9154b7fc1d7f78"
+    },
+    "slave": {
+      "build_id": "80ba7f64",
+      "source_sha256": "80ba7f643b1c290306c81b567ece81de21bd045187039924f7a624f48ece5388",
+      "environment": "valve_slave_c3",
+      "chip": "esp32c3",
+      "sdk_patch_identity": "1b42ade610119dacd2fad891a49ec4c0d58b2286933f9967c31b5a958fa85467",
+      "static_size_bytes": {
+        "RAM": 37224,
+        "Flash": 972578
+      },
+      "strong_symbols": [
+        "esp_ble_mesh_tracked_send_event",
+        "esp_ble_mesh_server_model_send_msg_tracked"
+      ],
+      "partitions": [
+        {
+          "name": "nvs",
+          "type": 1,
+          "subtype": 2,
+          "offset": "0x9000",
+          "size": 65536,
+          "flags": 0
+        },
+        {
+          "name": "phy_init",
+          "type": 1,
+          "subtype": 1,
+          "offset": "0x19000",
+          "size": 4096,
+          "flags": 0
+        },
+        {
+          "name": "factory",
+          "type": 0,
+          "subtype": 0,
+          "offset": "0x20000",
+          "size": 4063232,
+          "flags": 0
+        }
+      ],
+      "flash_files": {
+        "0x0": "bootloader.bin",
+        "0x8000": "partitions.bin",
+        "0x20000": "firmware.bin"
+      },
+      "firmware_sha256": "a0c3ecc6496f12a489579d5e6691bab0ab1ea501f87d66fc5be548675a001ba8",
+      "elf_sha256": "edac084d32dfdeef0aa6e170ced07e8dd681a0f80a2fbac2e7adf4b630ab7cde"
+    }
+  },
+  "evidence": [
+    {
+      "path": "D:\\pump\\pump-muti\\.pio\\host-offline-fix.log",
+      "sha256": "80dee32ff80bc04db0413af4582738180f3525aee4ec37539da33ea591a44f02",
+      "required_markers": [
+        "28 test groups passed",
+        "PASS recovery:",
+        "PASS integrated fault recovery:",
+        "PASS 1 nodes x 1000 batches",
+        "PASS 2 nodes x 1000 batches",
+        "PASS 5 nodes x 1000 batches",
+        "PASS simulated 8h/5 nodes: 3340 completed batches"
+      ]
+    },
+    {
+      "path": "D:\\pump\\pump-muti-slave\\.pio\\host-offline-fix.log",
+      "sha256": "0eb7ed85825444483f25787213855c944d67bb5a2aed524f3b154db472bff5d3",
+      "required_markers": [
+        "PASS transport fault locks",
+        "slave flow tests passed"
+      ]
+    },
+    {
+      "path": "D:\\pump\\pump-muti\\.pio\\sdk-offline-fix.log",
+      "sha256": "8c16fdf9912c95ddc8cee74f8932f606b7e788f03385719f0a37934f4e8a1b35",
+      "required_markers": [
+        "PASS SDK host harness and complete component pinning"
+      ]
+    },
+    {
+      "path": "D:\\pump\\pump-muti\\.pio\\log-tools-offline-fix.log",
+      "sha256": "ac3851b9eca4fddb2633b2804599c5b6a941fe9b233a4148755dc23a9bf55e48",
+      "required_markers": [
+        "Ran 7 tests",
+        "OK"
+      ]
+    },
+    {
+      "path": "D:\\pump\\pump-muti\\.pio\\build-offline-fix.log",
+      "sha256": "68d1089d73cd0031dabd87989854b673ffa74ae0ef313a83eb6e426f8b56293f"
+    },
+    {
+      "path": "D:\\pump\\pump-muti\\.pio\\compile_commands-offline-fix.json",
+      "sha256": "d3126fc889fadab9dab9e04357dca9c2154a91b8262169ed00242ff80d04d2f8"
+    },
+    {
+      "path": "D:\\pump\\pump-muti\\.pio\\envdump-offline-fix.log",
+      "sha256": "b5567f798ff8677fdc16860a337e362d4d6c521bf839a2c4862a371837b7226d"
+    },
+    {
+      "path": "D:\\pump\\pump-muti-slave\\.pio\\build-offline-fix.log",
+      "sha256": "44305ce5f28cb5fc6a1c189d40e67d4fcb8ccbe71d7ac023627b57e3d8a86ffd"
+    },
+    {
+      "path": "D:\\pump\\pump-muti-slave\\.pio\\compile_commands-offline-fix.json",
+      "sha256": "93ca733c5e2cd386e86860a26a3e3048fe964911b052ff9cc3ec797a517e2889"
+    },
+    {
+      "path": "D:\\pump\\pump-muti-slave\\.pio\\envdump-offline-fix.log",
+      "sha256": "0256ef13ab176ef82f60c5cadd73629c177c522b2b7c51a6360a67e82c875335"
+    }
+  ],
+  "simulations": {
+    "nodes": [
+      1,
+      2,
+      5
+    ],
+    "batches_each": 1000,
+    "target_ml": 500,
+    "target_pulses": 2940,
+    "virtual_hours": 8,
+    "virtual_batches": 3340,
+    "rf_or_water": false,
+    "master_and_slave_fault_integration": "PASS"
+  },
+  "app": {
+    "changed": false,
+    "tests_rerun_this_repair": false,
+    "reference": "mesh-candidate-20261019-e0950038-495431ba",
+    "reuse_requirement": "packager verifies archived APK against candidate hash and exact current source/config/test-log/XML equality with prior snapshot"
+  },
+  "pending": [
+    "device fault injection and callback matrix",
+    "1/2/5-node RF",
+    "20 batches of 500mL per scale",
+    "agreed measured-volume tolerance",
+    "8-hour real bench",
+    "runtime heap/stack peaks"
+  ],
+  "report_sha256": "5b5eacc6346e39e00ce8605f4fca40e38d2180633e7e6ad9fbee18a323e0007c"
+}

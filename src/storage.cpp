@@ -25,6 +25,7 @@ bool Storage::open(uint32_t profile) {
   ++state_.epoch;
   if (state_.lastJob.phase >= SchedulePhase::Preparing && state_.lastJob.phase <= SchedulePhase::Between) {
     state_.lastJob.phase = SchedulePhase::Failed;
+    state_.lastJob.reason = Reason::Reboot;
     state_.lastJob.unknown |= state_.lastJob.selected & ~state_.lastJob.complete;
   }
   return write(state_);

@@ -24,6 +24,7 @@ class Application {
                    Phase phase, Reason reason, uint32_t revision, bool terminal);
   void periodic(uint32_t now);
   void localState(uint32_t now);
+  void meshState();
   void pumpPwmState(Reply reply = Reply::Ok);
   void pumpTestReply(const ControlRequest &q, Reply result, uint32_t now);
   bool idle() const;

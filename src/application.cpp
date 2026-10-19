@@ -1,4 +1,5 @@
 #include "application.h"
+#include "mesh_tx_diagnostics.h"
 #include "hardware.h"
 #include "esp_log.h"
 #include "esp_system.h"
@@ -34,19 +35,20 @@ void Application::response(uint16_t ingress, const ControlRequest &q, Reply resu
   } else if (key.valid() && result == Reply::Ok) result = Reply::Unknown;
   auto p = packet(Op::Response, ingress); Writer w{p}; w.u64(q.client); w.u32(q.sequence); w.u8(uint8_t(result)); w.key(key);
   w.u8(uint8_t(report.phase)); w.u32(report.selected); w.u32(report.complete); w.u32(report.failed); w.u32(report.unknown);
-  w.u32(volume.ml); w.u32(volume.measured);
+  w.u32(volume.ml); w.u32(volume.measured); w.u8(uint8_t(report.reason));
   if (!ingress) publishResponse(p); else mesh_.send(p);
 }
 void Application::publishResponse(const Packet &p) {
   Reader r{p}; const uint64_t client = r.u64(); const uint32_t seq = r.u32(); const Reply code = Reply(r.u8());
   const JobKey key = r.key(); const auto phase = r.u8(); const uint32_t selected = r.u32(), complete = r.u32(), failed = r.u32(), unknown = r.u32();
   const uint32_t ml = r.u32(), measured = r.u32();
-  if (!r.done() || code > Reply::Unknown || phase > uint8_t(SchedulePhase::Failed)) return;
+  const Reason reason = r.at < p.size ? Reason(r.u8()) : Reason::None;
+  if (!r.done() || code > Reply::Unknown || phase > uint8_t(SchedulePhase::Failed) || reason > Reason::Protocol) return;
   snprintf(pendingResponse_[0], sizeof(pendingResponse_[0]),
-    "R client=%llx seq=%lu reply=%s job=%lu:%lu phase=%u mask=%08lx done=%08lx failed=%08lx unknown=%08lx",
+    "R client=%llx seq=%lu reply=%s job=%lu:%lu phase=%u mask=%08lx done=%08lx failed=%08lx unknown=%08lx reason=%s",
     static_cast<unsigned long long>(client), static_cast<unsigned long>(seq), replyName(code),
     static_cast<unsigned long>(key.epoch), static_cast<unsigned long>(key.id), phase,
-    static_cast<unsigned long>(selected), static_cast<unsigned long>(complete), static_cast<unsigned long>(failed), static_cast<unsigned long>(unknown));
+    static_cast<unsigned long>(selected), static_cast<unsigned long>(complete), static_cast<unsigned long>(failed), static_cast<unsigned long>(unknown), reasonName(reason));
   snprintf(pendingResponse_[1], sizeof(pendingResponse_[1]), "V job=%lu:%lu total_ml=%lu measured=%08lx",
     static_cast<unsigned long>(key.epoch), static_cast<unsigned long>(key.id),
     static_cast<unsigned long>(ml), static_cast<unsigned long>(measured));
@@ -60,10 +62,10 @@ void Application::retryResponse() {
 void Application::publishFlow(uint16_t address, JobKey key, uint32_t pulses, uint32_t k,
                               Phase phase, Reason reason, uint32_t revision, bool terminal) {
   char text[192];
-  snprintf(text, sizeof(text), "FLOW addr=%04x job=%lu:%lu pulses=%lu ml=%lu phase=%s revision=%lu terminal=%u measured=%u",
+  snprintf(text, sizeof(text), "FLOW addr=%04x job=%lu:%lu pulses=%lu ml=%lu phase=%s revision=%lu terminal=%u measured=%u reason=%s",
     address, static_cast<unsigned long>(key.epoch), static_cast<unsigned long>(key.id),
     static_cast<unsigned long>(pulses), static_cast<unsigned long>(volumeMl(pulses, k)), phaseName(phase),
-    static_cast<unsigned long>(revision), terminal, reason != Reason::Reboot);
+    static_cast<unsigned long>(revision), terminal, reason != Reason::Reboot, reasonName(reason));
   gateway_.publish(text);
 }
 void Application::replayFlows(uint32_t now) {
@@ -78,12 +80,12 @@ void Application::replayFlows(uint32_t now) {
     const ValveStatus &s = live.key == flowReplayKey_ ? live : saved;
     if (s.key != flowReplayKey_) { ++flowReplayCursor_; continue; }
     char text[192];
-    snprintf(text, sizeof(text), "FLOW addr=%04x job=%lu:%lu pulses=%lu ml=%lu phase=%s revision=%lu terminal=%u measured=%u",
+    snprintf(text, sizeof(text), "FLOW addr=%04x job=%lu:%lu pulses=%lu ml=%lu phase=%s revision=%lu terminal=%u measured=%u reason=%s",
       scheduler_.node(i).config.address, static_cast<unsigned long>(flowReplayKey_.epoch),
       static_cast<unsigned long>(flowReplayKey_.id), static_cast<unsigned long>(s.pulses),
       static_cast<unsigned long>(volumeMl(s.pulses, s.k)), phaseName(s.phase),
       static_cast<unsigned long>(s.revision), s.phase == Phase::Done || s.phase == Phase::Fault,
-      s.reason != Reason::Reboot);
+      s.reason != Reason::Reboot, reasonName(s.reason));
     if (gateway_.publish(text)) { ++flowReplayCursor_; flowReplayAt_ = now; }
     return;
   }
@@ -132,6 +134,7 @@ void Application::request(ControlRequest q, uint16_t ingress, uint32_t now) {
     return;
   }
   if (persisted.lastJob.unknown) { response(ingress, q, Reply::NotReady, {}); return; }
+  if (!mesh_.healthy()) { response(ingress, q, Reply::NotReady, {}); return; }
   if (mesh_.managementBusy()) { response(ingress, q, Reply::Busy, {}); return; }
   if (slot >= 0) {
     const auto &old = persisted.clients[slot];
@@ -169,16 +172,32 @@ void Application::incoming(const Packet &p, uint32_t now) {
   if (p.op == Op::Hello) {
     const uint32_t k = r.u32(), version = r.u32(); const bool commissioned = r.u8() == 1;
     if (!r.done()) return;
+    const auto &previous = scheduler_.node(scheduler_.find(p.peer));
+    const bool recover = !previous.seen || elapsed(now,previous.seenAt,15000) || store_.state().lastJob.unknown;
     scheduler_.hello(p.peer, k, version, commissioned, now);
     if (validK(k) && version) mesh_.slaveHello(p.peer);
     auto reply = packet(Op::HelloReply, p.peer); Writer w{reply}; w.u32(store_.state().epoch);
     w.u8(uint8_t(pump_.fault())); w.u8(uint8_t(scheduler_.report().phase)); mesh_.send(reply);
     // Read saved results after a reboot without reissuing PREPARE/START.
-    auto query = packet(Op::StatusGet, p.peer); Writer qw{query}; qw.key({}); mesh_.send(query);
+    if (recover && !scheduler_.active()) { auto query = packet(Op::StatusGet, p.peer); Writer qw{query}; qw.key({}); mesh_.send(query); }
+  } else if (p.op == Op::Capabilities) {
+    const uint32_t nonce=r.u32(); const uint16_t revision=r.u16(), features=r.u16(); const uint32_t build=r.u32();
+    if (r.done()) {
+      const bool applied=scheduler_.capabilities(p.peer,nonce,revision,features,build,now);
+      ESP_LOGI("cap_rx", "t=%lu peer=%04x nonce=%lu protocol=%u features=%04x build=%08lx applied=%u",
+        (unsigned long)now,p.peer,(unsigned long)nonce,revision,features,(unsigned long)build,applied);
+    }
   } else if (p.op == Op::LeaseAck) {
     const JobKey key = r.key(); const uint32_t sequence = r.u32(); const uint8_t rawReply = r.u8();
-    if (r.done() && rawReply <= uint8_t(Reply::Unknown))
-      scheduler_.leaseAck(p.peer, key, sequence, Reply(rawReply), now);
+    if (r.done() && rawReply <= uint8_t(Reply::Unknown)) {
+      bool matched=false; uint32_t issued=0;
+      const auto &node=scheduler_.node(scheduler_.find(p.peer));
+      for (const auto &v:node.leases) if (v.sequence==sequence) { matched=true; issued=v.issuedAt; }
+      const bool applied=scheduler_.leaseAck(p.peer,key,sequence,Reply(rawReply),now);
+      ESP_LOGI("lease_rx", "t=%lu peer=%04x job=%lu:%lu seq=%lu result=%s matched=%u issued=%lu age=%lu applied=%u",
+        (unsigned long)now,p.peer,(unsigned long)key.epoch,(unsigned long)key.id,(unsigned long)sequence,
+        replyName(Reply(rawReply)),matched,(unsigned long)issued,(unsigned long)(matched?now-issued:0),applied);
+    }
   } else if (p.op == Op::CommandReply) {
     const JobKey key = r.key(); const uint8_t rawCommand = r.u8(), rawReply = r.u8();
     if (r.done() && (rawCommand == uint8_t(Op::Prepare) || rawCommand == uint8_t(Op::Start)) &&
@@ -240,6 +259,9 @@ void Application::localState(uint32_t now) {
     !scheduler_.active() && !store_.state().lastJob.unknown);
   gateway_.publish(text);
 }
+void Application::meshState() {
+  publishMeshDiagnostics(mesh_.diagnostics(),mesh_.healthy(),[&](const char *line) { gateway_.publish(line); });
+}
 void Application::pumpPwmState(Reply result) {
   char text[192];
   snprintf(text, sizeof(text), "PUMP_PWM epoch=%lu rev=%lu level=%u duty=%u hz=%lu output=%u reply=%s test_manual=1 dry_max_ms=3000 dry_active=%u",
@@ -272,14 +294,15 @@ void Application::command(CommandLine &line, uint32_t now) {
   auto number = [&](size_t index, uint64_t &v, unsigned base = 10) { return index < count && unsignedNumber(tokens[index], v, base); };
   const char *op = tokens[0];
   if (!strcmp(op, "hello") && count == 1) {
-    char text[192]; snprintf(text, sizeof(text), "HELLO role=%s addr=%04x master=%04x epoch=%lu mesh=%u commissioned=%u pump_fault=%s individual=1",
+    char text[192]; snprintf(text, sizeof(text), "HELLO role=%s addr=%04x master=%04x epoch=%lu mesh=%u commissioned=%u pump_fault=%s individual=1 build=%08lx tx_healthy=%u",
       "PUMP_MASTER", mesh_.address(), store_.state().master,
       static_cast<unsigned long>(store_.state().epoch), mesh_.ready(),
-      board::pumpConfig().valid(), pumpFaultName(pump_.fault())); gateway_.publish(text); return;
+      board::pumpConfig().valid(), pumpFaultName(pump_.fault()),(unsigned long)PUMP_BUILD_ID,mesh_.healthy()); gateway_.publish(text); return;
   }
   if (!strcmp(op, "local") && count == 1) {
-    localState(now); pumpPwmState(); return;
+    localState(now); pumpPwmState(); meshState(); return;
   }
+  if (!strcmp(op, "mesh-diag") && count == 1) { meshState(); return; }
   if (!strcmp(op, "pump-speed")) {
     uint64_t epoch = 0, revision = 0, level = 0;
     if (count != 4 || !number(1, epoch) || !epoch || epoch > UINT32_MAX ||
@@ -556,6 +579,9 @@ void Application::periodic(uint32_t now) {
   }
   if (report.phase != lastPhase_) {
     lastPhase_ = report.phase;
+    ESP_LOGI("schedule", "t=%lu job=%lu:%lu phase=%u reason=%s selected=%08lx done=%08lx failed=%08lx unknown=%08lx",
+      (unsigned long)now,(unsigned long)report.key.epoch,(unsigned long)report.key.id,unsigned(report.phase),reasonName(report.reason),
+      (unsigned long)report.selected,(unsigned long)report.complete,(unsigned long)report.failed,(unsigned long)report.unknown);
     if (owner_.client) response(ownerIngress_, owner_, Reply::Ok, report.key);
   }
   retryResponse();
@@ -564,6 +590,9 @@ void Application::periodic(uint32_t now) {
 }
 void Application::run() {
   esp_task_wdt_add(nullptr);
+  ESP_LOGI("build", "id=%08lx protocol=%u features=%04x tracked=1",(unsigned long)PUMP_BUILD_ID,ProtocolRevision,RequiredFeatures);
+  uint32_t previousTick=nowMs(), maxTick=0, diagnosticAt=previousTick;
+  bool previousOutput=false;
   char ready[192];
   snprintf(ready, sizeof(ready), "PUMP_MULTI_V1 ready role=%s commissioned=%u; type hello or local",
     "PUMP_MASTER",
@@ -572,15 +601,28 @@ void Application::run() {
   TickType_t tick = xTaskGetTickCount();
   for (;;) {
     const uint32_t now = nowMs();
+    const uint32_t interval=now-previousTick; previousTick=now;
+    if (interval>maxTick) maxTick=interval;
+    if (elapsed(now,diagnosticAt,10000)) {
+      const auto m=mesh_.metrics(); diagnosticAt=now;
+      ESP_LOGI("mesh_diag", "healthy=%u submitted=%lu ended=%lu merged=%lu expired=%lu faults=%lu peak_sar=%u peak_pending=%u sar_max_ms=%lu tick_max_ms=%lu trace_lost=%lu",
+        mesh_.healthy(),(unsigned long)m.submitted,(unsigned long)m.ended,(unsigned long)m.merged,(unsigned long)m.expired,
+        (unsigned long)m.faults,m.peakSar,m.peakPending,(unsigned long)m.maxSarMs,(unsigned long)maxTick,(unsigned long)m.traceLost);
+      publishMeshDiagnostics(mesh_.diagnostics(),mesh_.healthy(),[](const char *line) { ESP_LOGI("mesh_state","%s",line); });
+    }
     mesh_.managementTick(now); inventoryTick(now);
     pump_.tick(now);
-    if (mesh_.takeOverflow() || gateway_.overflow()) {
+    scheduler_.submissions(now);
+    if (!mesh_.healthy() || mesh_.takeOverflow() || gateway_.overflow()) {
       pump_.trip(PumpFault::Transport, now); scheduler_.stop(Reason::Transport, now);
     }
     Packet p;
     for (unsigned count = 0; count < 4 && mesh_.receive(p); ++count) incoming(p, now);
     CommandLine commandLine; if (gateway_.receive(commandLine)) command(commandLine, now);
     scheduler_.tick(now);
+    if (previousOutput != pump_.output()) {
+      previousOutput=pump_.output(); ESP_LOGI("output","t=%lu command=%u",(unsigned long)now,previousOutput);
+    }
     periodic(now); esp_task_wdt_reset(); vTaskDelayUntil(&tick, pdMS_TO_TICKS(5));
   }
 }

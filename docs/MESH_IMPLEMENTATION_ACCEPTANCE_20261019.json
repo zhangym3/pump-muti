@@ -1,0 +1,82 @@
+{
+  "date": "2026-10-19",
+  "kind": "software_implementation_evidence_not_hardware_acceptance",
+  "overall": "SOFTWARE_PASS_HARDWARE_PENDING",
+  "production_max_concurrent": 1,
+  "implemented": true,
+  "firmware_uploaded_this_implementation": false,
+  "serial_ports_opened_this_implementation": false,
+  "water_test_performed": false,
+  "master": {
+    "git_base": "ad43f28bcef9ac4477d2c8428f000195e77d383c",
+    "build_id": "e0950038",
+    "source_sha256": "e095003831e85231fdbf5a0d9a4225abce4412725d5bcb664d70c480d3c6f7fe",
+    "ram_static_bytes": 58192,
+    "flash_bytes": 1000340,
+    "clean_build": "PASS",
+    "host_control_protocol_groups": 28,
+    "strong_tracked_hook": "PASS",
+    "binary_elf_sha_match": "PASS",
+    "bootloader_offset": "0x1000",
+    "application_offset": "0x20000"
+  },
+  "slave": {
+    "git_base": "56821a3fd071347f505d532620e7e4f628ebdbdf",
+    "build_id": "495431ba",
+    "source_sha256": "495431ba17c34a2efac68ac8aebd234a1df80028e5c33c63e5b3647cc2d83053",
+    "ram_static_bytes": 37032,
+    "flash_bytes": 969092,
+    "clean_build": "PASS",
+    "host_tests": "PASS",
+    "strong_tracked_hook": "PASS",
+    "binary_elf_sha_match": "PASS",
+    "bootloader_offset": "0x0",
+    "application_offset": "0x20000"
+  },
+  "app": {
+    "git_base": "4c8ea4a4169dc9805bd27d141e95c96b9c15d16f",
+    "tests_passed": 78,
+    "tests_failed": 0,
+    "debug_apk": "PASS",
+    "phone_ui_acceptance": "PENDING"
+  },
+  "sdk": {
+    "platform": "espressif32@6.10.0",
+    "framework_package": "3.50400.0",
+    "idf": "5.4.0",
+    "patch_identity": "1b42ade610119dacd2fad891a49ec4c0d58b2286933f9967c31b5a958fa85467",
+    "pinned_component_file_count": 1893,
+    "actual_function_extraction_with_host_stubs": "PASS",
+    "cache_and_isolated_framework_tamper_tests": "PASS",
+    "full_sdk_rtos_device_fault_matrix": "PENDING"
+  },
+  "simulations": {
+    "nodes": [1, 2, 5],
+    "batches_per_node_count": 1000,
+    "ml_per_channel": 500,
+    "target_pulses": 2940,
+    "k_pulses_per_litre": 5880,
+    "duplicate_start_drop_event_ack": "PASS",
+    "five_node_fault_scenarios": "PASS",
+    "virtual_hours": 8,
+    "virtual_completed_batches": 3340,
+    "wall_clock_bench": false,
+    "uses_rf_or_water": false
+  },
+  "log_tools": {"tests_passed": 7, "device_capture_performed": false},
+  "hardware_gates": {
+    "1_2_5_node_rf": "PENDING",
+    "sdk_callback_fault_matrix_on_device": "PENDING",
+    "runtime_heap_stack": "PENDING",
+    "per_task_lease_and_start_deadlines": "PENDING",
+    "stop_close_loss_power_cut": "PENDING",
+    "20_batches_500ml_for_each_1_2_5_channels": "PENDING",
+    "8_hour_wall_clock_bench": "PENDING",
+    "volume_tolerance_ml": null,
+    "physical_volume_precision": "PENDING"
+  },
+  "identity_scope": "build ID indexes source/default config; generated effective config and full binary/ELF hashes are preserved separately in candidate package",
+  "rollback": "NVS format3; old firmware may not read it; preserve cancel fence/replay records, plan migration before rollback",
+  "report": "MESH_IMPLEMENTATION_ACCEPTANCE_20261019.md",
+  "field_procedure": "MESH_FIELD_ACCEPTANCE_20261019.md"
+}

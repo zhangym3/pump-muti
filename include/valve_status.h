@@ -1,4 +1,5 @@
-#pragma once
+#ifndef PUMP_VALVE_STATUS_H
+#define PUMP_VALVE_STATUS_H
 #include "protocol.h"
 namespace pump {
 // Remote valve telemetry; field layout is also part of NVS format 1.
@@ -11,3 +12,5 @@ struct ValveStatus {
   uint32_t revision = 0;
 };
 }
+
+#endif
