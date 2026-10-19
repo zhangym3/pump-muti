@@ -5,7 +5,7 @@ import sys
 
 master = Path(__file__).resolve().parents[1]
 slave = master.parent / "pump-muti-slave"
-app = master.parent / "pumpmutiapp" / "app" / "src"
+app = master.parent / "pump-muti-app" / "app" / "src"
 
 def files(root):
     return [p for folder in ("src", "include") for p in (root / folder).rglob("*") if p.is_file()] + [root / "platformio.ini"]

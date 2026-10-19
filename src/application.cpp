@@ -42,15 +42,68 @@ void Application::publishResponse(const Packet &p) {
   const JobKey key = r.key(); const auto phase = r.u8(); const uint32_t selected = r.u32(), complete = r.u32(), failed = r.u32(), unknown = r.u32();
   const uint32_t ml = r.u32(), measured = r.u32();
   if (!r.done() || code > Reply::Unknown || phase > uint8_t(SchedulePhase::Failed)) return;
-  char text[192]; snprintf(text, sizeof(text),
+  snprintf(pendingResponse_[0], sizeof(pendingResponse_[0]),
     "R client=%llx seq=%lu reply=%s job=%lu:%lu phase=%u mask=%08lx done=%08lx failed=%08lx unknown=%08lx",
     static_cast<unsigned long long>(client), static_cast<unsigned long>(seq), replyName(code),
     static_cast<unsigned long>(key.epoch), static_cast<unsigned long>(key.id), phase,
     static_cast<unsigned long>(selected), static_cast<unsigned long>(complete), static_cast<unsigned long>(failed), static_cast<unsigned long>(unknown));
-  gateway_.publish(text);
-  snprintf(text, sizeof(text), "V job=%lu:%lu total_ml=%lu measured=%08lx",
+  snprintf(pendingResponse_[1], sizeof(pendingResponse_[1]), "V job=%lu:%lu total_ml=%lu measured=%08lx",
     static_cast<unsigned long>(key.epoch), static_cast<unsigned long>(key.id),
-    static_cast<unsigned long>(ml), static_cast<unsigned long>(measured)); gateway_.publish(text);
+    static_cast<unsigned long>(ml), static_cast<unsigned long>(measured));
+  responseLinePending_[0] = responseLinePending_[1] = true;
+  retryResponse();
+}
+void Application::retryResponse() {
+  for (size_t i = 0; i < 2; ++i) if (responseLinePending_[i] && gateway_.publish(pendingResponse_[i]))
+    responseLinePending_[i] = false;
+}
+void Application::publishFlow(uint16_t address, JobKey key, uint32_t pulses, uint32_t k,
+                              Phase phase, Reason reason, uint32_t revision, bool terminal) {
+  char text[192];
+  snprintf(text, sizeof(text), "FLOW addr=%04x job=%lu:%lu pulses=%lu ml=%lu phase=%s revision=%lu terminal=%u measured=%u",
+    address, static_cast<unsigned long>(key.epoch), static_cast<unsigned long>(key.id),
+    static_cast<unsigned long>(pulses), static_cast<unsigned long>(volumeMl(pulses, k)), phaseName(phase),
+    static_cast<unsigned long>(revision), terminal, reason != Reason::Reboot);
+  gateway_.publish(text);
+}
+void Application::replayFlows(uint32_t now) {
+  if (!flowReplayKey_.valid() || !elapsed(now, flowReplayAt_, 50)) return;
+  const JobReport report = flowReplayKey_ == scheduler_.report().key ? scheduler_.report() : store_.state().lastJob;
+  while (flowReplayCursor_ < MaxNodes) {
+    const size_t i = flowReplayCursor_;
+    const uint32_t bit = uint32_t(1) << i;
+    if (!(flowReplayMask_ & bit) || !(report.selected & bit)) { ++flowReplayCursor_; continue; }
+    const auto &live = scheduler_.node(i).status;
+    const auto &saved = store_.state().lastResults[i];
+    const ValveStatus &s = live.key == flowReplayKey_ ? live : saved;
+    if (s.key != flowReplayKey_) { ++flowReplayCursor_; continue; }
+    char text[192];
+    snprintf(text, sizeof(text), "FLOW addr=%04x job=%lu:%lu pulses=%lu ml=%lu phase=%s revision=%lu terminal=%u measured=%u",
+      scheduler_.node(i).config.address, static_cast<unsigned long>(flowReplayKey_.epoch),
+      static_cast<unsigned long>(flowReplayKey_.id), static_cast<unsigned long>(s.pulses),
+      static_cast<unsigned long>(volumeMl(s.pulses, s.k)), phaseName(s.phase),
+      static_cast<unsigned long>(s.revision), s.phase == Phase::Done || s.phase == Phase::Fault,
+      s.reason != Reason::Reboot);
+    if (gateway_.publish(text)) { ++flowReplayCursor_; flowReplayAt_ = now; }
+    return;
+  }
+  flowReplayKey_ = {}; flowReplayMask_ = 0;
+}
+void Application::requeryUnknown(uint32_t now) {
+  if (!resultQueryKey_.valid() || !elapsed(now, resultQueryAt_, 75)) return;
+  const JobReport report = resultQueryKey_ == scheduler_.report().key ? scheduler_.report() : store_.state().lastJob;
+  while (resultQueryCursor_ < MaxNodes) {
+    const size_t i = resultQueryCursor_;
+    const uint32_t bit = uint32_t(1) << i;
+    if (!(resultQueryMask_ & bit) || !(report.unknown & bit) || !scheduler_.node(i).config.address) {
+      ++resultQueryCursor_; continue;
+    }
+    auto query = packet(Op::StatusGet, scheduler_.node(i).config.address);
+    Writer writer{query}; writer.key(resultQueryKey_);
+    if (mesh_.send(query)) { ++resultQueryCursor_; resultQueryAt_ = now; }
+    return;
+  }
+  resultQueryKey_ = {}; resultQueryMask_ = 0;
 }
 void Application::request(ControlRequest q, uint16_t ingress, uint32_t now) {
   if (ingress && scheduler_.find(ingress) < 0) { response(ingress, q, Reply::Unauthorized, {}); return; }
@@ -68,28 +121,37 @@ void Application::request(ControlRequest q, uint16_t ingress, uint32_t now) {
   }
   if (q.action == Action::Query) {
     if (slot < 0 || persisted.clients[slot].sequence != q.sequence) response(ingress, q, Reply::Unknown, {});
-    else response(ingress, q, Reply::Ok, persisted.clients[slot].key);
+    else {
+      const JobKey key = persisted.clients[slot].key;
+      const JobReport report = key == scheduler_.report().key ? scheduler_.report() : persisted.lastJob;
+      flowReplayKey_ = key; flowReplayMask_ = report.selected; flowReplayCursor_ = 0; flowReplayAt_ = now;
+      resultQueryKey_ = key; resultQueryMask_ = report.unknown; resultQueryCursor_ = 0; resultQueryAt_ = now;
+      resultQueryOwner_ = q; resultQueryIngress_ = ingress; resultQueryOwnerPending_ = report.unknown != 0;
+      response(ingress, q, Reply::Ok, key);
+    }
     return;
   }
+  if (persisted.lastJob.unknown) { response(ingress, q, Reply::NotReady, {}); return; }
   if (mesh_.managementBusy()) { response(ingress, q, Reply::Busy, {}); return; }
   if (slot >= 0) {
     const auto &old = persisted.clients[slot];
-    const Reply replay = replayDecision(old, q);
+    const Reply replay = replayDecision(old, q, persisted.clientAmounts[slot]);
     if (replay != Reply::Pending) { response(ingress, q, replay, old.key); return; }
   } else if (free < 0) { response(ingress, q, Reply::Capacity, {}); return; }
   if (q.epoch != persisted.epoch || persisted.jobCounter == UINT32_MAX) { response(ingress, q, Reply::Stale, {}); return; }
-  const auto allowed = scheduler_.check(q.mask, q.ml, q.maxMs, now);
+  const auto allowed = scheduler_.check(q.mask, q.ml, q.maxMs, now, q.individual() ? q.amounts : nullptr);
   if (allowed != Reply::Ok) { response(ingress, q, allowed, {}); return; }
   // Durable acceptance precedes PREPARE or any physical output. No eviction of client high-water marks.
   auto next = persisted; const JobKey key{next.epoch, ++next.jobCounter};
   auto &record = next.clients[slot >= 0 ? slot : free];
   record.client = q.client; record.sequence = q.sequence; record.mask = q.mask;
   record.ml = q.ml; record.maxMs = q.maxMs; record.key = key;
+  memcpy(next.clientAmounts[slot >= 0 ? slot : free], q.amounts, MaxNodes);
   next.lastJob = {}; next.lastJob.key = key; next.lastJob.selected = q.mask;
   next.lastJob.phase = SchedulePhase::Preparing;
   for (auto &result : next.lastResults) result = {};
   if (!store_.write(next)) { storageHealthy_ = false; response(ingress, q, Reply::Storage, {}); return; }
-  scheduler_.begin(key, q.mask, q.ml, q.maxMs, now); savedJob_ = false;
+  scheduler_.begin(key, q.mask, q.ml, q.maxMs, now, q.individual() ? q.amounts : nullptr); savedJob_ = false;
   owner_ = q; ownerIngress_ = ingress; response(ingress, q, Reply::Ok, key);
 }
 void Application::incoming(const Packet &p, uint32_t now) {
@@ -113,6 +175,15 @@ void Application::incoming(const Packet &p, uint32_t now) {
     w.u8(uint8_t(pump_.fault())); w.u8(uint8_t(scheduler_.report().phase)); mesh_.send(reply);
     // Read saved results after a reboot without reissuing PREPARE/START.
     auto query = packet(Op::StatusGet, p.peer); Writer qw{query}; qw.key({}); mesh_.send(query);
+  } else if (p.op == Op::LeaseAck) {
+    const JobKey key = r.key(); const uint32_t sequence = r.u32(); const uint8_t rawReply = r.u8();
+    if (r.done() && rawReply <= uint8_t(Reply::Unknown))
+      scheduler_.leaseAck(p.peer, key, sequence, Reply(rawReply), now);
+  } else if (p.op == Op::CommandReply) {
+    const JobKey key = r.key(); const uint8_t rawCommand = r.u8(), rawReply = r.u8();
+    if (r.done() && (rawCommand == uint8_t(Op::Prepare) || rawCommand == uint8_t(Op::Start)) &&
+        rawReply <= uint8_t(Reply::Unknown))
+      scheduler_.commandReply(p.peer, key, Op(rawCommand), Reply(rawReply), now);
   } else if (p.op == Op::CommissionReply) {
     const uint32_t request = r.u32(); const uint8_t rawReply = r.u8(), configured = r.u8();
     const uint32_t k = r.u32(), version = r.u32();
@@ -128,14 +199,24 @@ void Application::incoming(const Packet &p, uint32_t now) {
     ValveStatus s; if (!decodeStatus(p, s)) return;
     scheduler_.status(p.peer, s, now);
     const int slot = scheduler_.find(p.peer); const uint32_t bit = uint32_t(1) << slot;
+    const auto &current = scheduler_.node(slot).status;
+    const auto &report = scheduler_.report();
+    if (current.key == s.key && current.revision == s.revision && s.key == report.key &&
+        (report.selected & bit) && (s.phase == Phase::Done || s.phase == Phase::Fault))
+      publishFlow(p.peer, s.key, s.pulses, s.k, s.phase, s.reason, s.revision, true);
     const auto &last = store_.state().lastJob;
     if (!scheduler_.active() && !pump_.output() && s.key.valid() && s.key == last.key &&
         (last.selected & bit) && (last.unknown & bit) && s.reason != Reason::Reboot &&
         (s.phase == Phase::Done || s.phase == Phase::Fault)) {
-      auto next = store_.state(); next.lastResults[slot] = s;
-      next.lastJob.complete |= bit; next.lastJob.unknown &= ~bit;
-      if (s.reason != Reason::Target || !s.quiet || s.truncated) next.lastJob.failed |= bit;
+      auto next = store_.state(); next.lastResults[slot] = s; next.lastJob = scheduler_.report();
       if (!store_.write(next)) { storageHealthy_ = false; pump_.trip(PumpFault::Transport, now); }
+      else {
+        savedJob_ = true;
+        if (resultQueryOwnerPending_ && resultQueryKey_ == s.key) {
+          response(resultQueryIngress_, resultQueryOwner_, Reply::Ok, s.key);
+          if (!scheduler_.report().unknown) resultQueryOwnerPending_ = false;
+        }
+      }
     }
     auto ack = packet(Op::EventAck, p.peer); Writer w{ack}; w.key(s.key); w.u32(s.revision); mesh_.send(ack);
   } else if (p.op == Op::Request) {
@@ -146,9 +227,7 @@ void Application::incoming(const Packet &p, uint32_t now) {
     if (!r.done() || phase > Phase::Fault || flags > 1) return;
     const int i = scheduler_.find(p.peer); const auto &s = scheduler_.node(i).status;
     if (key.valid() && scheduler_.summary(p.peer, key, pulses, revision, now)) {
-      char text[128]; snprintf(text, sizeof(text), "FLOW addr=%04x job=%lu:%lu pulses=%lu ml=%lu phase=%s",
-        p.peer, static_cast<unsigned long>(s.key.epoch), static_cast<unsigned long>(s.key.id),
-        static_cast<unsigned long>(pulses), static_cast<unsigned long>(volumeMl(pulses, s.k)), phaseName(phase)); gateway_.publish(text);
+      publishFlow(p.peer, key, pulses, s.k, phase, s.reason, revision, false);
     }
   }
 }
@@ -193,7 +272,7 @@ void Application::command(CommandLine &line, uint32_t now) {
   auto number = [&](size_t index, uint64_t &v, unsigned base = 10) { return index < count && unsignedNumber(tokens[index], v, base); };
   const char *op = tokens[0];
   if (!strcmp(op, "hello") && count == 1) {
-    char text[192]; snprintf(text, sizeof(text), "HELLO role=%s addr=%04x master=%04x epoch=%lu mesh=%u commissioned=%u pump_fault=%s",
+    char text[192]; snprintf(text, sizeof(text), "HELLO role=%s addr=%04x master=%04x epoch=%lu mesh=%u commissioned=%u pump_fault=%s individual=1",
       "PUMP_MASTER", mesh_.address(), store_.state().master,
       static_cast<unsigned long>(store_.state().epoch), mesh_.ready(),
       board::pumpConfig().valid(), pumpFaultName(pump_.fault())); gateway_.publish(text); return;
@@ -271,7 +350,7 @@ void Application::command(CommandLine &line, uint32_t now) {
     if (dryRun && result == Reply::Ok) ++pwmRevision_; // Forced low speed must have a new device revision.
     pumpTestReply(q, result, now); return;
   }
-  if (!strcmp(op, "start") || !strcmp(op, "stop") || !strcmp(op, "query")) {
+  if (!strcmp(op, "start") || !strcmp(op, "start-each") || !strcmp(op, "stop") || !strcmp(op, "query")) {
     ControlRequest q;
     if (!parseControl(tokens, count, store_.state().epoch, q)) {
       gateway_.publish("INVALID control_fields"); return;
@@ -475,7 +554,13 @@ void Application::periodic(uint32_t now) {
     storageHealthy_ = store_.write(next); savedJob_ = true;
     if (!storageHealthy_) pump_.trip(PumpFault::Transport, now);
   }
-  if (report.phase != lastPhase_) { lastPhase_ = report.phase; response(ownerIngress_, owner_, Reply::Ok, report.key); }
+  if (report.phase != lastPhase_) {
+    lastPhase_ = report.phase;
+    if (owner_.client) response(ownerIngress_, owner_, Reply::Ok, report.key);
+  }
+  retryResponse();
+  replayFlows(now);
+  requeryUnknown(now);
 }
 void Application::run() {
   esp_task_wdt_add(nullptr);

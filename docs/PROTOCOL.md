@@ -15,6 +15,7 @@ Bluetooth Mesh Vendor CID `0x02E5`、Model ID `0x0001`，群组 `0xC001`。固�
 | C6 SUMMARY | 从→主 | key, pulses:u32, revision:u32, phase:u8, valveCommand:u8 | 18 |
 | C7 EVENT_ACK | 主→从 | key, revision:u32 | 12 |
 | C8 REQUEST | 入口→主 | action:u8, epoch:u32, client:u64, sequence:u32, mask:u32, ml:u32, maxMs:u32, stopKey | 37 |
+| C8 REQUEST 单独设置 | 入口→主 | action=1:u8, epoch:u32, client:u64, sequence:u32, mask:u32, ml=0:u32, maxMs:u32, amounts:32 bytes | 61 |
 | C9 RESPONSE | 主→入口 | client:u64, sequence:u32, reply:u8, key, schedulePhase:u8, selected:u32, complete:u32, failed:u32, unknown:u32, totalMl:u32, measured:u32 | 46 |
 | CA HELLO | 从→主 | k:u32, version:u32, commissioned:u8 | 9 |
 | CB HELLO_REPLY | 主→从 | epoch:u32, pumpFault:u8, schedulePhase:u8 | 6 |
@@ -51,6 +52,20 @@ PREPARE / START 按每 150ms 一个未确认节点轮询，分别有 10s / 4s �
 
 ## GATT 文本层
 
+### 单独设置水量（2026-10-19）
+
+`HELLO` 新增可选能力 `individual=1`。缺省为不支持，APP 不向旧主机发送单独设置启动命令。
+
+```text
+start-each CLIENT_HEX SEQ EPOCH MASK_HEX MAX_MS AMOUNTS_64HEX
+```
+
+`AMOUNTS_64HEX` 按槽位 1～32 各占两位十六进制；选中槽位为 `01`～`28`，表示 50～2000 mL，单位 50 mL；未选槽位必须 `00`。例如 mask=80000001、1 号 300mL、32 号 2000mL，计划为 `06` + 30 个 `00` + `28`。无论选多少路，整条命令不超过 144 字节。`MAX_MS` 是从设置页取得的全局单路时限，范围 1～240000ms。
+
+主机将整个计划作为一个任务先持久化，再按编号顺序逐路 PREPARE；每路独立计算目标脉冲，沿用原从机 PREPARE 布局。手机断连不影响已接受任务，重试必须保留完整计划和原身份/序号；同序号任意一路目标改变返回 CONFLICT。统一设置仍使用原 `start` 和 37 字节 REQUEST。新建任务的 APP 水量上限为 2000mL，旧已接受任务/历史记录和真实累计流量不截断。
+
+主机 NVS 格式升级为 2：保留原格式 1 的完整字段布局并增加 16 个客户端的逐路计划。启动可原位读取旧记录，保留 PIN、登记表、客户端高水位、任务及结果，再写入格式 2；禁止擦除 NVS。降级到只支持格式 1 的固件会拒绝读取格式 2，应使用升级前备份安排维护。独立试泵仍共用原客户端记录，无需改变从机执行协议。
+
 UUID、命令格式见 README。维护参数仍只允许 USB 修改；业务 GATT 开启前必须设置六位 PIN。使用安全连接、MITM 和加密属性权限。手机写入一条命令后需等待权威 R 响应，或查询确认。旧 Mesh 角色由 Master 启动流程自动接管。
 
 主节点 `local` 返回 `LOCAL pump_command=N pump_phase=N fault=NAME`，不再返回传感器或运行反馈字段；客户端不能把 `pump_command=0` 解释为已通过传感器确认停泵。
@@ -61,7 +76,7 @@ UUID、命令格式见 README。维护参数仍只允许 USB 修改；业务 GAT
 
 响应为 `PUMP_TEST client=HEX seq=N epoch=N reply=NAME state=UNKNOWN/RUNNING/STOPPED op=START/STOP/QUERY`。APP 匹配身份、序号和启动 epoch；GATT 写成功不等于接受。未确认的查询或停止失败不能把待确认启动标为拒绝。只允许明确 START 拒绝或权威停止状态释放该测试；确认终态后不因迟到响应恢复执行态。
 
-接受记录与定量请求共用持久化客户端高水位；先落盘再输出。保留存储格式版本 1，mask=0、ml=0 表示通水测试，mask=0、ml=1 表示快速测试；相同序号不同模式冲突。重复启动不延长时限、不再次输出。停止先到时写入同序号 tombstone，确保尚未处理的启动之后无法运行。主机本地定时关闭，不依赖手机和续租；重启关闭输出且不会恢复旧测试。
+接受记录与定量请求共用持久化客户端高水位；先落盘再输出。存储格式 2 兼容导入原版本 1 的记录，mask=0、ml=0 表示通水测试，mask=0、ml=1 表示快速测试；相同序号不同模式冲突。重复启动不延长时限、不再次输出。停止先到时写入同序号 tombstone，确保尚未处理的启动之后无法运行。主机本地定时关闭，不依赖手机和续租；重启关闭输出且不会恢复旧测试。
 
 Master `LOCAL` 增加 `test_supported=1 test_active=N test_ms=N test_client=HEX test_seq=N pump_ready=N`。运行期间及结束时发布状态；测试不输出流量结果，也不自动打开阀门。`STOPPED` 仅表示该测试不再驱动输出，当前输出还需检查 `pump_command`，并非运行传感器反馈。
 

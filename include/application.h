@@ -17,6 +17,11 @@ class Application {
   void request(ControlRequest q, uint16_t ingress, uint32_t now);
   void response(uint16_t ingress, const ControlRequest &q, Reply reply, JobKey key);
   void publishResponse(const Packet &p);
+  void retryResponse();
+  void replayFlows(uint32_t now);
+  void requeryUnknown(uint32_t now);
+  void publishFlow(uint16_t address, JobKey key, uint32_t pulses, uint32_t k,
+                   Phase phase, Reason reason, uint32_t revision, bool terminal);
   void periodic(uint32_t now);
   void localState(uint32_t now);
   void pumpPwmState(Reply reply = Reply::Ok);
@@ -39,6 +44,14 @@ class Application {
   MasterScheduler &scheduler_;
   uint32_t lastRequestAt_ = 0;
   bool storageHealthy_ = true, savedJob_ = true;
+  char pendingResponse_[2][192] = {};
+  bool responseLinePending_[2] = {};
+  JobKey flowReplayKey_, resultQueryKey_;
+  ControlRequest resultQueryOwner_;
+  uint32_t flowReplayMask_ = 0, flowReplayAt_ = 0, resultQueryMask_ = 0, resultQueryAt_ = 0;
+  uint16_t resultQueryIngress_ = 0;
+  uint8_t flowReplayCursor_ = 0, resultQueryCursor_ = 0;
+  bool resultQueryOwnerPending_ = false;
   bool meshResetPending_ = false;
   struct CommissionOperation { bool active=false; uint32_t request=0, sentAt=0; uint16_t address=0; uint8_t slot=0, attempts=0; } commission_;
   ControlRequest owner_;

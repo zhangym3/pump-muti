@@ -35,6 +35,8 @@ esp_ble_mesh_model_op_t operations[] = {
   {ESP_BLE_MESH_MODEL_OP_3(0xCB, CompanyId), 6, 0},
   {ESP_BLE_MESH_MODEL_OP_3(0xCC, CompanyId), 4, 0},
   {ESP_BLE_MESH_MODEL_OP_3(0xCD, CompanyId), 14, 0},
+  {ESP_BLE_MESH_MODEL_OP_3(0xCE, CompanyId), 13, 0},
+  {ESP_BLE_MESH_MODEL_OP_3(0xCF, CompanyId), 10, 0},
   ESP_BLE_MESH_MODEL_OP_END
 };
 esp_ble_mesh_client_t meshConfigClient;
@@ -56,12 +58,13 @@ void modelCb(esp_ble_mesh_model_cb_event_t event, esp_ble_mesh_model_cb_param_t 
   if (!m.ctx || m.ctx->net_idx != 0 || m.ctx->app_idx != 0 ||
       m.length > sizeof(Packet::bytes) || (m.opcode & 0xFFFF) != CompanyId) return;
   const uint8_t code = uint8_t(m.opcode >> 16);
-  if (code < uint8_t(Op::Prepare) || code > uint8_t(Op::CommissionReply)) return;
+  if (code < uint8_t(Op::Prepare) || code > uint8_t(Op::CommandReply)) return;
   auto in = packet(Op(code), m.ctx->addr); in.size = uint8_t(m.length);
   memcpy(in.bytes, m.msg, in.size); instance->incoming(in);
 }
 bool urgent(const Packet &p) {
-  return p.op == Op::Close || p.op == Op::Lease ||
+  return p.op == Op::Close || p.op == Op::Lease || p.op == Op::LeaseAck ||
+    p.op == Op::CommandReply ||
     (p.op == Op::Request && p.size && p.bytes[0] == uint8_t(Action::Stop));
 }
 }
@@ -121,7 +124,7 @@ bool MeshTransport::send(const Packet &p) {
 void MeshTransport::incoming(const Packet &p) {
   // Master receives remote state and forwarded requests; peer authorization is checked by Application.
   if (p.op != Op::Hello && p.op != Op::Status && p.op != Op::Summary && p.op != Op::Request &&
-      p.op != Op::CommissionReply) return;
+      p.op != Op::CommissionReply && p.op != Op::LeaseAck && p.op != Op::CommandReply) return;
   if (xQueueSend(urgent(p) ? urgentRx_ : rx_, &p, 0) != pdTRUE && urgent(p)) overflow_ = true;
 }
 bool MeshTransport::receive(Packet &p) {

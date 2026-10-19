@@ -25,6 +25,7 @@ extern "C" void app_main() {
     const auto &n = storage.state().nodes[i];
     if (n.address) scheduler.registerNode(i, {n.address, n.k, n.version});
   }
+  scheduler.restore(storage.state().lastJob, storage.state().lastResults);
   static Application application(storage, mesh, gateway, pump, scheduler);
   constexpr BaseType_t controlCore = portNUM_PROCESSORS > 1 ? 1 : 0;
   if (xTaskCreatePinnedToCore([](void *p) { static_cast<Application *>(p)->run(); }, "local_control",

@@ -1,4 +1,5 @@
 #include "master_scheduler.h"
+#include "control_request.h"
 namespace pump {
 bool MasterScheduler::active() const {
   return report_.phase >= SchedulePhase::Preparing && report_.phase <= SchedulePhase::Between;
@@ -30,21 +31,34 @@ void MasterScheduler::hello(uint16_t source, uint32_t k, uint32_t ver, bool comm
   auto &n = nodes_[i]; n.seen = true; n.seenAt = now;
   n.commissioned = commissioned && n.config.k == k && n.config.version == ver;
 }
-Reply MasterScheduler::check(uint32_t mask, uint32_t ml, uint32_t maxMs, uint32_t now) {
+Reply MasterScheduler::check(uint32_t mask, uint32_t ml, uint32_t maxMs, uint32_t now, const uint8_t *amounts) {
   if (active()) return Reply::Busy;
-  if (!mask || !ml || !maxMs || maxMs > 240000 || !concurrent_ || concurrent_ > MaxNodes) return Reply::Invalid;
+  if (!mask || (amounts ? ml != 0 || !validAmounts(mask, amounts) : !ml) ||
+      !maxMs || maxMs > 240000 || !concurrent_ || concurrent_ > MaxNodes) return Reply::Invalid;
   if (!pump_.ready(now)) return Reply::NotReady;
   for (size_t i = 0; i < MaxNodes; ++i) if (mask & (uint32_t(1) << i)) {
     const auto &n = nodes_[i]; uint32_t pulses = 0;
     if (!n.config.address || !n.seen || elapsed(now, n.seenAt, 15000)) return Reply::Offline;
-    if (!n.commissioned || !targetPulses(ml, n.config.k, pulses)) return Reply::NotReady;
+    if (!n.commissioned || !targetPulses(amounts ? uint32_t(amounts[i]) * 50 : ml, n.config.k, pulses)) return Reply::NotReady;
     if (n.status.phase >= Phase::Prepared && n.status.phase <= Phase::Settling) return Reply::Busy;
   }
   return Reply::Ok;
 }
-void MasterScheduler::begin(JobKey key, uint32_t mask, uint32_t ml, uint32_t maxMs, uint32_t now) {
+void MasterScheduler::restore(const JobReport &report, const ValveStatus results[MaxNodes]) {
+  report_ = report;
+  for (size_t i = 0; i < MaxNodes; ++i) {
+    nodes_[i].status = results[i];
+    nodes_[i].telemetrySeen = false;
+    if (report_.key.valid() && results[i].key == report_.key && results[i].reason != Reason::Reboot) {
+      nodes_[i].telemetryPulses = results[i].pulses;
+      nodes_[i].telemetrySeen = true;
+    }
+  }
+}
+void MasterScheduler::begin(JobKey key, uint32_t mask, uint32_t ml, uint32_t maxMs, uint32_t now, const uint8_t *amounts) {
   report_ = {}; report_.key = key; report_.selected = remaining_ = mask;
   ml_ = ml; maxMs_ = maxMs; leaseSeq_ = pumpSeq_ = 0; abort_ = false;
+  for (size_t i = 0; i < MaxNodes; ++i) amounts_[i] = amounts ? amounts[i] : 0;
   batch(now);
 }
 void MasterScheduler::batch(uint32_t now) {
@@ -60,8 +74,9 @@ void MasterScheduler::batch(uint32_t now) {
 void MasterScheduler::sendNode(size_t i, Op op) {
   auto p = packet(op, nodes_[i].config.address); Writer w{p}; w.key(report_.key);
   if (op == Op::Prepare) {
-    uint32_t pulses = 0; targetPulses(ml_, nodes_[i].config.k, pulses);
-    w.u32(ml_); w.u32(pulses); w.u32(nodes_[i].config.k);
+    const uint32_t ml = ml_ ? ml_ : uint32_t(amounts_[i]) * 50;
+    uint32_t pulses = 0; targetPulses(ml, nodes_[i].config.k, pulses);
+    w.u32(ml); w.u32(pulses); w.u32(nodes_[i].config.k);
     w.u32(nodes_[i].config.version); w.u32(maxMs_);
   }
   net_.send(p);
@@ -95,8 +110,22 @@ void MasterScheduler::status(uint16_t source, const ValveStatus &s, uint32_t now
   if (!n.telemetrySeen || s.pulses >= n.telemetryPulses) {
     n.telemetryPulses = s.pulses; n.telemetryAt = now; n.telemetrySeen = true;
   }
-  if (!active() || s.key != report_.key) return;
   const uint32_t bit = uint32_t(1) << index;
+  if (!active()) {
+    // Reconcile late terminal telemetry in memory as well as in persistent storage.
+    if (s.key == report_.key && (report_.selected & bit) &&
+        (s.phase == Phase::Done || s.phase == Phase::Fault)) {
+      report_.complete |= bit;
+      report_.unknown &= ~bit;
+      if (s.reason == Reason::Reboot) report_.unknown |= bit;
+      if (s.reason != Reason::Target || !s.quiet || s.truncated) report_.failed |= bit;
+      if ((report_.complete & report_.selected) == report_.selected && !report_.unknown)
+        report_.phase = report_.failed ? SchedulePhase::Failed : SchedulePhase::Complete;
+      else if (report_.unknown || report_.failed) report_.phase = SchedulePhase::Failed;
+    }
+    return;
+  }
+  if (s.key != report_.key) return;
   if (!(batch_ & bit)) return;
   if ((s.phase == Phase::Settling || s.phase == Phase::Done || s.phase == Phase::Fault) &&
       s.reason != Reason::Target && report_.phase != SchedulePhase::Draining) {
@@ -113,6 +142,38 @@ void MasterScheduler::status(uint16_t source, const ValveStatus &s, uint32_t now
     if (s.reason != Reason::Target || !s.quiet || s.truncated) report_.failed |= bit;
   }
 }
+bool MasterScheduler::leaseAck(uint16_t source, JobKey key, uint32_t sequence, Reply result, uint32_t now) {
+  const int index = find(source);
+  if (index < 0 || !active() || report_.phase != SchedulePhase::Supplying ||
+      key != report_.key || !sequence || sequence != leaseSeq_ || result > Reply::Unknown) return false;
+  const uint32_t bit = uint32_t(1) << index;
+  if (!(batch_ & bit) || !(opened_ & bit) || (closed_ & bit)) return false;
+  auto &node = nodes_[index];
+  // A retransmitted ACK for the same multicast lease proves only the original
+  // renewal arrived; it must not keep the master's lease watchdog alive.
+  if (node.leaseAckSeen && node.leaseAckSequence == sequence) return false;
+  if (result != Reply::Ok) {
+    stop(Reason::Transport, now);
+    return true;
+  }
+  node.leaseAckAt = now;
+  node.leaseAckSequence = sequence;
+  node.leaseAckSeen = true;
+  return true;
+}
+bool MasterScheduler::commandReply(uint16_t source, JobKey key, Op command, Reply result, uint32_t now) {
+  const int index = find(source);
+  if (index < 0 || !active() || key != report_.key || result > Reply::Unknown ||
+      (command != Op::Prepare && command != Op::Start)) return false;
+  if ((command == Op::Prepare && report_.phase != SchedulePhase::Preparing) ||
+      (command == Op::Start && report_.phase != SchedulePhase::Opening)) return false;
+  const uint32_t bit = uint32_t(1) << index;
+  if (!(batch_ & bit)) return false;
+  if (result == Reply::Ok) return true; // STATUS remains the physical-state acknowledgement.
+  report_.failed |= bit;
+  stop(Reason::Transport, now);
+  return true;
+}
 void MasterScheduler::tick(uint32_t now) {
   if (!active()) return;
   if (pump_.phase() == PumpPhase::Fault && report_.phase != SchedulePhase::Draining) {
@@ -123,7 +184,7 @@ void MasterScheduler::tick(uint32_t now) {
     else if (elapsed(now, stageAt_, 60000)) stop(Reason::PumpFault, now);
     return;
   }
-  if (report_.phase != SchedulePhase::Draining && elapsed(now, leaseAt_, 1000)) {
+  if (report_.phase == SchedulePhase::Supplying && elapsed(now, leaseAt_, 1000)) {
     auto p = packet(Op::Lease, AllSlaves); Writer w{p}; w.key(report_.key); w.u32(++leaseSeq_);
     net_.send(p); leaseAt_ = now;
   }
@@ -144,7 +205,14 @@ void MasterScheduler::tick(uint32_t now) {
       if (closed_ == batch_) {
         report_.phase = SchedulePhase::Draining; stageAt_ = now;
       } else if (pump_.start(report_.key, ++pumpSeq_, now) != Reply::Ok) stop(Reason::PumpFault, now);
-      else { report_.phase = SchedulePhase::Supplying; stageAt_ = pumpRenewAt_ = now; }
+      else {
+        for (size_t i = 0; i < MaxNodes; ++i) if (batch_ & (uint32_t(1) << i)) {
+          nodes_[i].leaseAckAt = now;
+          nodes_[i].leaseAckSequence = 0;
+          nodes_[i].leaseAckSeen = false;
+        }
+        report_.phase = SchedulePhase::Supplying; stageAt_ = pumpRenewAt_ = now;
+      }
     } else if (elapsed(now, stageAt_, report_.phase == SchedulePhase::Preparing ? 10000 : 4000)) {
       stop(Reason::Transport, now);
     }
@@ -152,7 +220,14 @@ void MasterScheduler::tick(uint32_t now) {
     if (elapsed(now, pumpRenewAt_, 250)) {
       pump_.renew(report_.key, ++pumpSeq_, now); pumpRenewAt_ = now;
     }
-    if (closed_ == batch_) {
+    bool leaseExpired = false;
+    for (size_t i = 0; i < MaxNodes; ++i) {
+      const uint32_t bit = uint32_t(1) << i;
+      if ((batch_ & bit) && (opened_ & bit) && !(closed_ & bit) &&
+          elapsed(now, nodes_[i].leaseAckAt, LeaseAckTimeoutMs)) { leaseExpired = true; break; }
+    }
+    if (leaseExpired) stop(Reason::Lease, now);
+    else if (closed_ == batch_) {
       pump_.stop(now); report_.phase = SchedulePhase::Draining; stageAt_ = now;
     } else if (elapsed(now, stageAt_, maxMs_ + 5000)) stop(Reason::Runtime, now);
   } else if (report_.phase == SchedulePhase::Draining) {

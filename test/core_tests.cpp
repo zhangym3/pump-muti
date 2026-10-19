@@ -1,5 +1,6 @@
 #include "control_request.h"
 #include "master_scheduler.h"
+#include "persistent_state.h"
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
@@ -117,6 +118,50 @@ void scheduler_faults_and_ordering() {
   f.status(0,Phase::Fault,Reason::NoFlow,4,800); f.pump.tick(800); f.scheduler.tick(800);
   CHECK(f.scheduler.report().phase == SchedulePhase::Failed);
 }
+void lease_acknowledgements_and_timeout() {
+  ScheduleFixture acknowledged; acknowledged.scheduler.begin({1,1},1,100,10000,100);
+  acknowledged.status(0,Phase::Prepared); acknowledged.scheduler.tick(200);
+  acknowledged.scheduler.tick(350); acknowledged.status(0,Phase::Opening,Reason::None,2,400);
+  acknowledged.scheduler.tick(400); CHECK(acknowledged.io.on);
+  acknowledged.scheduler.tick(401);
+  CHECK(acknowledged.net.count(Op::Lease) == 1);
+  Reader lease{acknowledged.net.sent.back()}; CHECK(lease.key() == JobKey{1,1});
+  const uint32_t sequence = lease.u32(); CHECK(lease.done() && sequence != 0);
+  CHECK(!acknowledged.scheduler.leaseAck(3,{1,1},sequence,Reply::Ok,450));
+  CHECK(!acknowledged.scheduler.leaseAck(2,{2,1},sequence,Reply::Ok,450));
+  CHECK(!acknowledged.scheduler.leaseAck(2,{1,1},sequence+1,Reply::Ok,450));
+  CHECK(acknowledged.scheduler.leaseAck(2,{1,1},sequence,Reply::Ok,450));
+  CHECK(!acknowledged.scheduler.leaseAck(2,{1,1},sequence,Reply::Ok,451));
+  CHECK(acknowledged.io.on);
+
+  ScheduleFixture lost; lost.scheduler.begin({1,1},1,100,10000,100);
+  lost.status(0,Phase::Prepared); lost.scheduler.tick(200); lost.scheduler.tick(350);
+  lost.status(0,Phase::Opening,Reason::None,2,400); lost.scheduler.tick(400);
+  for (uint32_t now=401; now<=2750; now+=50) { lost.pump.tick(now); lost.scheduler.tick(now); }
+  CHECK(lost.io.on);
+  lost.pump.tick(2800); lost.scheduler.tick(2800);
+  CHECK(!lost.io.on && lost.scheduler.report().phase == SchedulePhase::Draining);
+}
+void rejected_commands_and_late_terminal_reconciliation() {
+  ScheduleFixture rejected; rejected.scheduler.begin({1,1},1,100,10000,100);
+  CHECK(rejected.scheduler.commandReply(2,{1,1},Op::Prepare,Reply::Busy,150));
+  CHECK(!rejected.io.on && (rejected.scheduler.report().failed & 1));
+  CHECK(!rejected.scheduler.commandReply(2,{1,1},Op::Start,Reply::Ok,151));
+
+  ScheduleFixture restored;
+  JobReport report; report.key={1,1}; report.selected=1; report.unknown=1; report.phase=SchedulePhase::Failed;
+  ValveStatus saved; saved.key={1,1}; saved.phase=Phase::Fault; saved.reason=Reason::Reboot;
+  saved.revision=7; saved.k=1000;
+  ValveStatus results[MaxNodes]{}; results[0]=saved;
+  restored.scheduler.restore(report,results);
+  CHECK(restored.scheduler.report().unknown == 1);
+  ValveStatus terminal; terminal.key={1,1}; terminal.k=1000; terminal.pulses=100;
+  terminal.phase=Phase::Done; terminal.reason=Reason::Target; terminal.quiet=true; terminal.revision=8;
+  restored.scheduler.status(2,terminal,500);
+  CHECK(restored.scheduler.report().complete == 1);
+  CHECK(restored.scheduler.report().unknown == 0);
+  CHECK(restored.scheduler.report().phase == SchedulePhase::Complete);
+}
 void thirty_two_nodes_and_batches() {
   ScheduleFixture f; CHECK(f.scheduler.check(0xffffffff,100,10000,100) == Reply::Ok);
   CHECK(f.scheduler.registerNode(32,{99,1000,1}) == Reply::Capacity);
@@ -179,7 +224,7 @@ void bounded_pump_test() {
   FakePump io; auto cfg = pumpConfig(); cfg.maxRunMs = 20000;
   PumpSafetyController c(io, cfg); c.boot(0);
   CHECK(!c.testReady(49) && c.testReady(50) && !io.on);
-  CHECK(c.start({1,1},1,50) == Reply::NotReady);
+  CHECK(c.start({1,1},1,49) == Reply::NotReady);
   CHECK(c.reset(0) == Reply::Ok);
   CHECK(c.startTest({1,1},1,0,50) == Reply::Invalid);
   CHECK(c.startTest({1,1},1,10001,50) == Reply::Invalid);
@@ -210,7 +255,8 @@ void bounded_pump_test_wrap_and_limits() {
   PumpSafetyController unconfigured(io,cfg); unconfigured.boot(0);
   CHECK(unconfigured.reset(0) == Reply::NotReady);
   CHECK(unconfigured.startTest({1,1},1,3000,1000) == Reply::NotReady);
-  ControlRequest q; q.client = 1; q.sequence = 5; q.epoch = 7; q.maxMs = 3000;
+  ControlRequest q; q.action = Action::Start; q.client = 1; q.sequence = 5; q.epoch = 7; q.maxMs = 3000;
+  CHECK(!q.individual()); // mask=0 is the existing independent pump-test namespace.
   ClientRecord cancelled{1,5,0,0,0,{7,0}};
   CHECK(replayDecision(cancelled,q) == Reply::Conflict);
   ClientRecord accepted{1,5,0,0,3000,{7,1}};
@@ -302,12 +348,85 @@ void wire_contract_vectors() {
     decoded.maxMs == q.maxMs && decoded.stopKey == q.stopKey);
   --p.size; CHECK(!decodeRequest(p, decoded));
 }
+void individual_request_and_durable_replay() {
+  char plan[65]; memset(plan, '0', 64); plan[64] = 0;
+  plan[1] = '6'; plan[62] = '2'; plan[63] = '8'; // 300 mL and 2000 mL, slots 1 and 32.
+  const char *tokens[] = {"start-each", "ffffffffffffffff", "4294967295", "7", "80000001", "240000", plan};
+  ControlRequest q; CHECK(parseControl(tokens, 7, 7, q));
+  CHECK(q.individual() && q.amounts[0] == 6 && q.amounts[31] == 40 && q.maxMs == 240000);
+  auto packet = encodeRequest(1, q); CHECK(packet.size == 61);
+  ControlRequest decoded; CHECK(decodeRequest(packet, decoded));
+  CHECK(!memcmp(decoded.amounts, q.amounts, MaxNodes));
+  CHECK(decoded.client == q.client && decoded.mask == q.mask && decoded.sequence == q.sequence);
+  --packet.size; CHECK(!decodeRequest(packet, decoded));
+  plan[3] = '1'; CHECK(!parseControl(tokens, 7, 7, decoded)); plan[3] = '0';
+  plan[1] = '0'; CHECK(!parseControl(tokens, 7, 7, decoded)); plan[1] = '6';
+  plan[63] = '9'; CHECK(!parseControl(tokens, 7, 7, decoded)); plan[63] = '8';
+  plan[1] = 'g'; CHECK(!parseControl(tokens, 7, 7, decoded)); plan[1] = '6';
+  plan[63] = 0; CHECK(!parseControl(tokens, 7, 7, decoded));
+  ClientRecord record{q.client,q.sequence,q.mask,0,q.maxMs,{q.epoch,10}};
+  CHECK(replayDecision(record,q,q.amounts) == Reply::Ok);
+  auto changed = q; changed.amounts[0] = 7;
+  CHECK(replayDecision(record,changed,q.amounts) == Reply::Conflict);
+  changed = q; changed.ml = 300;
+  CHECK(replayDecision(record,changed,q.amounts) == Reply::Conflict);
+  changed = q; --changed.sequence;
+  CHECK(replayDecision(record,changed,q.amounts) == Reply::Stale);
+}
+void individual_scheduler_prepares_each_slot_and_retains_global_limit() {
+  ScheduleFixture f;
+  uint8_t plan[MaxNodes] = {}; plan[0] = 6; plan[31] = 40;
+  CHECK(f.scheduler.check(0x80000001,0,60000,100,plan) == Reply::Ok);
+  CHECK(f.scheduler.check(1,0,60000,100,plan) == Reply::Invalid);
+  CHECK(f.scheduler.check(0x80000001,300,60000,100,plan) == Reply::Invalid);
+  CHECK(f.scheduler.check(0x80000001,0,240001,100,plan) == Reply::Invalid);
+  f.scheduler.begin({1,1},0x80000001,0,60000,100,plan);
+  f.scheduler.tick(150);
+  auto p = f.net.sent.back(); Reader first{p}; CHECK(p.op == Op::Prepare && p.peer == 2);
+  CHECK(first.key() == JobKey{1,1}); CHECK(first.u32() == 300 && first.u32() == 300);
+  CHECK(first.u32() == 1000 && first.u32() == 1 && first.u32() == 60000 && first.done());
+  f.status(0,Phase::Prepared,Reason::None,1,200); f.scheduler.tick(200);
+  f.status(0,Phase::Done,Reason::Target,3,210); f.scheduler.tick(210); f.scheduler.tick(220);
+  f.scheduler.tick(260); f.scheduler.tick(310);
+  p = f.net.sent.back(); Reader second{p}; CHECK(p.op == Op::Prepare && p.peer == 33);
+  CHECK(second.key() == JobKey{1,1}); CHECK(second.u32() == 2000 && second.u32() == 2000);
+  CHECK(second.u32() == 1000 && second.u32() == 1 && second.u32() == 60000 && second.done());
+  // The complete plan is already resident in the master; no second phone command is required.
+  f.status(31,Phase::Prepared,Reason::None,1,350); f.scheduler.tick(350);
+  f.status(31,Phase::Done,Reason::Target,3,360); f.scheduler.tick(360); f.scheduler.tick(370);
+  CHECK(f.scheduler.report().phase == SchedulePhase::Complete && f.scheduler.report().complete == 0x80000001);
+  CHECK(!f.io.on && f.io.starts == 0);
+}
+void persistent_v1_migration_preserves_identity_results_and_plan_replay() {
+  LegacyPersistentState old; old.profile = 42; old.epoch = 111; old.jobCounter = 19; old.gatewayPin = 123456;
+  old.nodes[31] = {33,5880,2}; old.clients[15] = {77,99,0x80000000,1000000,60000,{111,19}};
+  old.lastJob.key = {111,19}; old.lastJob.selected = 0x80000000; old.lastJob.phase = SchedulePhase::Complete;
+  old.lastResults[31].key = {111,19}; old.lastResults[31].pulses = 1234;
+  PersistentState upgraded;
+  CHECK(decodePersistentState(&old,sizeof(old),42,upgraded));
+  CHECK(upgraded.format == 2 && upgraded.epoch == 111 && upgraded.jobCounter == 19 && upgraded.gatewayPin == old.gatewayPin);
+  CHECK(upgraded.nodes[31].address == 33 && upgraded.nodes[31].version == 2 && upgraded.clients[15].sequence == 99);
+  CHECK(upgraded.clients[15].ml == 1000000 && upgraded.lastJob.key == old.lastJob.key && upgraded.lastResults[31].pulses == 1234);
+  for (auto &amounts : upgraded.clientAmounts) for (auto v : amounts) CHECK(v == 0);
+  auto &c = upgraded.clients[15]; c.ml = 0; upgraded.clientAmounts[15][31] = 40;
+  PersistentState restored; CHECK(decodePersistentState(&upgraded,sizeof(upgraded),42,restored));
+  ControlRequest q; q.action = Action::Start; q.client = c.client; q.sequence = c.sequence; q.mask = c.mask;
+  q.epoch = c.key.epoch; q.maxMs = c.maxMs; q.amounts[31] = 40;
+  CHECK(replayDecision(restored.clients[15],q,restored.clientAmounts[15]) == Reply::Ok);
+  q.amounts[31] = 39; CHECK(replayDecision(restored.clients[15],q,restored.clientAmounts[15]) == Reply::Conflict);
+  CHECK(!decodePersistentState(&upgraded,sizeof(upgraded)-1,42,restored));
+  CHECK(!decodePersistentState(&old,sizeof(old),43,restored));
+  upgraded.clientAmounts[15][31] = 0; CHECK(!decodePersistentState(&upgraded,sizeof(upgraded),42,restored));
+  old.format = 2; CHECK(!decodePersistentState(&old,sizeof(old),42,restored));
+}
 int main() {
   struct Test { const char *name; void (*run)(); } tests[] = {
     {"output-only pump and commissioning",pump_output_only_and_commissioning}, {"pump authorization and replay",pump_authorization_and_replay},
     {"pump stop cooldown and timer wrap",pump_stop_cooldown_and_wrap}, {"pump runtime and fault reset",pump_runtime_and_fault_reset},
     {"scheduler valve before pump",scheduler_order_and_completion}, {"cancel retries and bounded timeout",scheduler_cancel_retries_and_timeout},
     {"scheduler faults and message ordering",scheduler_faults_and_ordering}, {"32 logical nodes and sequential batches",thirty_two_nodes_and_batches},
+    {"lease acknowledgement and timeout",lease_acknowledgements_and_timeout},
+    {"command rejection and reboot reconciliation",rejected_commands_and_late_terminal_reconciliation},
     {"telemetry cannot control outputs",telemetry_cannot_control_outputs}, {"request parsing and replay prevention",request_parser_and_replay},
     {"reboot volume remains unknown",reboot_volume_is_unknown},
     {"bounded independent pump test",bounded_pump_test}, {"test wrap limits and cancellation replay",bounded_pump_test_wrap_and_limits},
@@ -315,6 +434,9 @@ int main() {
     {"PWM failure and authorization deadline",pwm_failure_and_authorization},
     {"phone tests do not relock dosing",phone_test_does_not_relock_dosing},
     {"dry test wrap failures and replay",dry_test_wrap_failure_and_replay},
+    {"individual command parsing and durable replay",individual_request_and_durable_replay},
+    {"individual targets in one autonomous job",individual_scheduler_prepares_each_slot_and_retains_global_limit},
+    {"format 1 to 2 storage migration",persistent_v1_migration_preserves_identity_results_and_plan_replay},
     {"wire protocol contract vectors",wire_contract_vectors}
   };
   for (auto &t : tests) { t.run(); std::printf("PASS %s\n",t.name); }

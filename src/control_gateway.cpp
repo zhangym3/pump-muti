@@ -281,9 +281,9 @@ bool ControlGateway::submit(const char *text, size_t length, bool bluetooth) {
   return true;
 }
 bool ControlGateway::receive(CommandLine &cmd) { return xQueueReceive(commands_, &cmd, 0) == pdTRUE; }
-void ControlGateway::publish(const char *text) {
+bool ControlGateway::publish(const char *text) {
   char line[192] = {}; snprintf(line, sizeof(line), "%s\n", text);
-  xQueueSend(output_, line, 0);
+  return output_ && xQueueSend(output_, line, 0) == pdTRUE;
 }
 void ControlGateway::ioWorker() {
   char input[160] = {}; size_t used = 0; bool discarding = false;
