@@ -16,6 +16,8 @@ class MeshTransport final : public MeshSender {
  public:
   bool init(uint16_t master);
   bool send(const Packet &p) override;
+  bool beginLeaseScope(JobKey job, uint32_t &floor) override;
+  MeshTxGovernor::Admission prepare(const Packet &p) override;
   bool receive(Packet &p);
   bool ready() const;
   uint16_t address() const;
@@ -25,6 +27,7 @@ class MeshTransport final : public MeshSender {
   void worker();
   bool takeSubmission(MeshSubmission &out) override;
   void fence(JobKey job) override;
+  void retire(uint16_t peer, JobKey job, Op op) override;
   bool healthy() const override;
   MeshTxGovernor::Metrics metrics() const;
   MeshTxGovernor::Diagnostics diagnostics() const;

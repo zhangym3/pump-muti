@@ -72,6 +72,8 @@ void MasterScheduler::begin(JobKey key, uint32_t mask, uint32_t ml, uint32_t max
   }
   for (size_t i = 0; i < MaxNodes; ++i) amounts_[i] = amounts ? amounts[i] : 0;
   batch(now);
+  guard_="NONE";
+  if (!net_.beginLeaseScope(key,leaseFloor_)) { guard_="LEASE_SCOPE_FAILED"; stop(Reason::Transport,now); }
 }
 void MasterScheduler::batch(uint32_t now) {
   batch_ = prepared_ = opened_ = closed_ = final_ = 0;
@@ -79,6 +81,8 @@ void MasterScheduler::batch(uint32_t now) {
   for (auto &n : nodes_) {
     n.commandPending = n.leasePending = n.commandSent = n.leaseSent = false;
     n.attempts = n.leaseCursor = 0; n.leaseAckSeen = false;
+    n.openedAt=n.firstStartIssuedAt=n.startAckAt=n.nextLeaseAt=0;
+    n.startIssued=n.startAckSeen=n.commandCommitted=n.commandAccepted=n.commandEarly=false;
     for (auto &v : n.leases) v = {};
   }
   uint8_t count = 0;
@@ -89,7 +93,7 @@ void MasterScheduler::batch(uint32_t now) {
   report_.phase = SchedulePhase::Preparing; stageAt_ = now;
   txAt_ = now - 100; leaseAt_ = now - 1000; cursor_ = 0;
 }
-bool MasterScheduler::sendNode(size_t i, Op op) {
+MeshTxGovernor::Admission MasterScheduler::sendNode(size_t i, Op op) {
   auto p = packet(op, nodes_[i].config.address); Writer w{p}; w.key(report_.key);
   if (op == Op::Prepare) {
     const uint32_t ml = ml_ ? ml_ : uint32_t(amounts_[i]) * 50;
@@ -97,9 +101,10 @@ bool MasterScheduler::sendNode(size_t i, Op op) {
     w.u32(ml); w.u32(pulses); w.u32(nodes_[i].config.k);
     w.u32(nodes_[i].config.version); w.u32(maxMs_);
     const uint16_t speed = pump_.speed() == 1 ? SpeedLowPermille : pump_.speed() == 2 ? SpeedMediumPermille : SpeedHighPermille;
-    w.u16(speed); w.u32(LeaseMs); w.u8(0);
+    w.u16(speed); w.u32(LeaseMs); w.u8(0); w.u32(leaseFloor_);
   }
-  return net_.send(p);
+  if (op == Op::Prepare) return net_.prepare(p);
+  return net_.send(p) ? MeshTxGovernor::Admission::Accepted : MeshTxGovernor::Admission::Failed;
 }
 void MasterScheduler::closeBatch(Reason r) {
   for (size_t i = 0; i < MaxNodes; ++i) {
@@ -157,13 +162,12 @@ void MasterScheduler::status(uint16_t source, const ValveStatus &s, uint32_t now
       s.reason != Reason::Target && report_.phase != SchedulePhase::Draining) {
     stop(s.reason, now);
   }
-  if (s.phase == Phase::Prepared) prepared_ |= bit;
-  if (s.phase == Phase::Opening || s.phase == Phase::Running) {
-    if (!(opened_ & bit)) n.openedAt = now;
-    opened_ |= bit;
-  }
   if (s.phase == Phase::Settling || s.phase == Phase::Done || s.phase == Phase::Fault) {
-    opened_ |= bit; closed_ |= bit;
+    closed_ |= bit;
+    net_.retire(source,report_.key,Op::Start); net_.retire(source,report_.key,Op::Lease);
+    if (closed_ == batch_ && report_.phase != SchedulePhase::Draining) {
+      pump_.stop(now); report_.phase=SchedulePhase::Draining; stageAt_=txAt_=now;
+    }
   }
   if (s.phase == Phase::Done || s.phase == Phase::Fault) {
     final_ |= bit; report_.complete |= bit;
@@ -176,33 +180,46 @@ void MasterScheduler::submissions(uint32_t now) {
   while (net_.takeSubmission(sent)) {
     const int i = find(sent.packet.peer);
     if (i < 0 || !active()) continue;
-    auto &n = nodes_[i];
-    if (sent.packet.op == Op::CapabilitiesGet) {
-      if (!preflight_ || sent.committed) continue;
-      Reader r{sent.packet}; if (r.u32() != capNonce_) continue;
-      n.commandPending = false; n.commandSent = true; n.commandAt = sent.issuedAt; ++n.attempts;
+    auto &n=nodes_[i]; const auto op=sent.packet.op;
+    if (op == Op::CapabilitiesGet) {
+      Reader r{sent.packet}; if (!preflight_ || r.u32()!=capNonce_) continue;
+      if (sent.committed) { n.commandSent=true; n.commandAt=sent.issuedAt; ++n.attempts; }
+      else n.commandPending=false;
     } else {
-      Reader r{sent.packet}; if (r.key() != report_.key || abort_) continue;
-      if (sent.packet.op == Op::Prepare || sent.packet.op == Op::Start) {
-        if ((sent.packet.op == Op::Prepare && report_.phase != SchedulePhase::Preparing) ||
-            (sent.packet.op == Op::Start && report_.phase != SchedulePhase::Opening)) continue;
-        if (sent.packet.op == Op::Start && !bootstrap_) { bootstrap_ = true; bootstrapAt_ = sent.issuedAt; }
-        if (sent.committed) continue;
-        n.commandPending = false; n.commandSent = true; n.commandAt = sent.issuedAt; ++n.attempts;
-      } else if (sent.packet.op == Op::Lease) {
-        const uint32_t sequence = r.u32();
+      if (MeshTxGovernor::key(sent.packet)!=report_.key || abort_) continue;
+      if (sent.error) { guard_="TX_ERROR"; stop(Reason::Transport,now); continue; }
+      if (op==Op::Prepare || op==Op::Start) {
+        if ((op==Op::Prepare && (preflight_ || report_.phase!=SchedulePhase::Preparing)) ||
+            (op==Op::Start && report_.phase!=SchedulePhase::Opening)) continue;
         if (sent.committed) {
-          auto &v=n.leases[n.leaseCursor++ % 3]; v={}; v.sequence=sequence; v.issuedAt=sent.issuedAt;
-          continue;
+          n.commandCommitted=n.commandSent=true; n.commandAt=sent.issuedAt; ++n.attempts;
+          if (op==Op::Start && !n.startIssued) {
+            n.startIssued=true; n.firstStartIssuedAt=sent.issuedAt;
+            if (!bootstrap_) { bootstrap_=true; bootstrapAt_=sent.issuedAt; }
+          }
+        } else {
+          n.commandPending=false; n.commandAccepted=true;
+          if (n.commandEarly) { n.commandEarly=false; commandReply(sent.packet.peer,report_.key,op,n.commandResult,now); }
         }
-        n.leasePending = false; n.leaseSent = true; n.leaseAt = sent.issuedAt;
-        for (auto &v:n.leases) if (v.sequence == sequence && !sent.error) {
-          v.accepted=true;
-          if (v.early) { v.early=false; leaseAck(sent.packet.peer,report_.key,sequence,v.result,now); }
+      } else if (op==Op::Lease) {
+        const uint32_t sequence=leaseSequence(sent.packet);
+        if (sent.committed) {
+          auto &v=n.leases[n.leaseCursor]; n.leaseCursor=uint8_t((n.leaseCursor+1)%10);
+          v={}; v.sequence=sequence; v.issuedAt=sent.issuedAt;
+          n.leaseSent=true; n.leaseAt=sent.issuedAt;
+          const uint32_t offset=report_.phase==SchedulePhase::Supplying ?
+            (leasePhase(size_t(i))+1000-uint32_t(sent.issuedAt-stageAt_)%1000)%1000 : 0;
+          n.nextLeaseAt=sent.issuedAt+1000+offset;
+        } else {
+          n.leasePending=false;
+          for (auto &v:n.leases) if (v.sequence==sequence) {
+            v.accepted=true;
+            if (v.early) { v.early=false; leaseAck(sent.packet.peer,report_.key,sequence,v.result,now); }
+          }
         }
       }
     }
-    if (sent.error) stop(Reason::Transport,now);
+    if (sent.error) { guard_="TX_ERROR"; stop(Reason::Transport,now); }
   }
 }
 bool MasterScheduler::capabilities(uint16_t source, uint32_t nonce, uint16_t revision,
@@ -210,12 +227,13 @@ bool MasterScheduler::capabilities(uint16_t source, uint32_t nonce, uint16_t rev
   const int i = find(source);
   if (i < 0 || !preflight_ || report_.phase != SchedulePhase::Preparing || nonce != capNonce_ ||
       !(report_.selected & (uint32_t(1) << i))) return false;
-  if (revision != ProtocolRevision || (features & RequiredFeatures) != RequiredFeatures || !approvedSlaveBuild(buildId)) {
-    report_.failed |= uint32_t(1) << i; stop(Reason::Protocol,now); return true;
+  // Compatibility comes from the protocol and features, not a list of build hashes.
+  if (revision != ProtocolRevision || (features & RequiredFeatures) != RequiredFeatures || !buildId) {
+    guard_="PROTOCOL_MISMATCH"; report_.failed |= uint32_t(1) << i; stop(Reason::Protocol,now); return true;
   }
   auto &n = nodes_[i];
   if (!n.seen || elapsed(now, n.seenAt, 15000) || (n.helloBuildId && n.helloBuildId != buildId)) {
-    report_.failed |= uint32_t(1) << i; stop(Reason::Protocol,now); return true;
+    guard_="PROTOCOL_MISMATCH"; report_.failed |= uint32_t(1) << i; stop(Reason::Protocol,now); return true;
   }
   n.capable = true; n.buildId = buildId; n.capabilityRevision = revision;
   n.capabilityFeatures = features;
@@ -226,7 +244,7 @@ bool MasterScheduler::leaseAck(uint16_t source, JobKey key, uint32_t sequence, R
   const int i = find(source);
   if (i < 0 || abort_ || (report_.phase != SchedulePhase::Opening && report_.phase != SchedulePhase::Supplying) ||
       key != report_.key || !sequence || result > Reply::Unknown) return false;
-  if (report_.phase == SchedulePhase::Opening && bootstrap_ && elapsed(now,bootstrapAt_,2400)) return false;
+  if (report_.phase == SchedulePhase::Opening && bootstrap_ && elapsed(now,bootstrapAt_,4000)) return false;
   const uint32_t bit = uint32_t(1) << i;
   if (!(batch_ & bit) || !(opened_ & bit) || (closed_ & bit)) return false;
   auto &n = nodes_[i];
@@ -239,39 +257,65 @@ bool MasterScheduler::leaseAck(uint16_t source, JobKey key, uint32_t sequence, R
       stop(result == Reply::Stale ? Reason::Lease : Reason::Transport,now);
       return true;
     }
-    if (n.leaseAckSeen && !serialNewer(sequence,n.leaseAckSequence)) return false;
+    if (n.leaseAckSeen && sequence<=n.leaseAckSequence) return false;
     n.leaseAckSeen = true; n.leaseAckSequence = sequence; n.leaseAckAt = v.issuedAt;
     return true;
   }
   return false; // Unknown / not-yet-issued sequence can never pre-authorize a future lease.
 }
+bool MasterScheduler::compactLeaseAck(uint16_t source, uint32_t epoch, uint32_t sequence, Reply result, uint32_t now) {
+  if (epoch!=report_.key.epoch) return false;
+  return leaseAck(source,report_.key,sequence,result,now);
+}
+bool MasterScheduler::targetClosed(uint16_t source, JobKey key, uint32_t now) {
+  const int i=find(source); if (i<0 || !active() || key!=report_.key) return false;
+  const uint32_t bit=uint32_t(1)<<i;
+  if (!(batch_ & bit) || !nodes_[i].startIssued) return false;
+  closed_|=bit;
+  net_.retire(source,key,Op::Start); net_.retire(source,key,Op::Lease);
+  if (closed_==batch_ && (report_.phase==SchedulePhase::Opening || report_.phase==SchedulePhase::Supplying)) {
+    pump_.stop(now); report_.phase=SchedulePhase::Draining; stageAt_=txAt_=now;
+  }
+  return true; // Does not set final, pulses, complete or clear an existing fault.
+}
+uint32_t MasterScheduler::leasePhase(size_t slot) const {
+  unsigned ordinal=0;
+  for(size_t i=0;i<slot;++i) if(batch_ & (uint32_t(1)<<i)) ++ordinal;
+  return (ordinal%5)*200;
+}
 void MasterScheduler::leases(uint32_t now) {
   for (size_t i=0;i<MaxNodes;++i) {
     const uint32_t bit=uint32_t(1)<<i; auto &n=nodes_[i];
     if (!(batch_ & bit) || !(opened_ & bit) || (closed_ & bit) || n.leasePending) continue;
-    if (!n.leaseSent || elapsed(now,n.leaseAt,1000)) {
-      auto p=packet(Op::Lease,n.config.address); Writer w{p}; w.key(report_.key); w.u32(0);
+    if (!n.leaseSent || int32_t(now-n.nextLeaseAt)>=0) {
+      auto p=packet(Op::Lease,n.config.address); p.context=report_.key;
+      Writer w{p}; w.u32(report_.key.epoch); w.u32(0);
       if (net_.send(p)) n.leasePending=true;
-      else { stop(Reason::Transport,now); return; }
+      else { guard_="TX_ERROR"; stop(Reason::Transport,now); return; }
     }
   }
 }
 bool MasterScheduler::commandReply(uint16_t source, JobKey key, Op command, Reply result, uint32_t now) {
-  const int index = find(source);
-  if (index < 0 || !active() || key != report_.key || result > Reply::Unknown ||
-      (command != Op::Prepare && command != Op::Start)) return false;
-  if ((command == Op::Prepare && report_.phase != SchedulePhase::Preparing) ||
-      (command == Op::Start && report_.phase != SchedulePhase::Opening)) return false;
-  const uint32_t bit = uint32_t(1) << index;
-  if (!(batch_ & bit)) return false;
-  if (result == Reply::Ok) {
-    if (command == Op::Prepare) prepared_ |= bit;
-    else opened_ |= bit;
+  const int index=find(source);
+  if (index<0 || !active() || abort_ || preflight_ || key!=report_.key || result>Reply::Unknown ||
+      (command!=Op::Prepare && command!=Op::Start)) return false;
+  if ((command==Op::Prepare && report_.phase!=SchedulePhase::Preparing) ||
+      (command==Op::Start && report_.phase!=SchedulePhase::Opening)) return false;
+  if (command==Op::Prepare && elapsed(now,stageAt_,15000)) return false;
+  const uint32_t bit=uint32_t(1)<<index; auto &n=nodes_[index];
+  if (!(batch_ & bit) || (closed_ & bit) || !n.commandCommitted) return false;
+  if (!n.commandAccepted) { if (!n.commandEarly) { n.commandEarly=true; n.commandResult=result; } return false; }
+  if (command==Op::Start && bootstrap_ && elapsed(now,bootstrapAt_,4000)) return false;
+  if (result==Reply::Ok) {
+    net_.retire(source,key,command); n.commandPending=false;
+    if (command==Op::Prepare) prepared_|=bit;
+    else {
+      if (!n.startAckSeen) { n.startAckSeen=true; n.startAckAt=n.openedAt=now; }
+      opened_|=bit;
+    }
     return true;
   }
-  report_.failed |= bit;
-  stop(Reason::Transport, now);
-  return true;
+  guard_="COMMAND_REJECT"; report_.failed|=bit; stop(Reason::Transport,now); return true;
 }
 bool MasterScheduler::result(uint16_t source, const ValveStatus &s, uint32_t now) {
   if (s.phase != Phase::Done && s.phase != Phase::Fault) return false;
@@ -281,7 +325,7 @@ bool MasterScheduler::result(uint16_t source, const ValveStatus &s, uint32_t now
 void MasterScheduler::tick(uint32_t now) {
   submissions(now);
   if (!active()) return;
-  if (!net_.healthy() && report_.phase != SchedulePhase::Draining) stop(Reason::Transport,now);
+  if (!net_.healthy() && report_.phase != SchedulePhase::Draining) { guard_="TX_ERROR"; stop(Reason::Transport,now); }
   if (pump_.phase() == PumpPhase::Fault && report_.phase != SchedulePhase::Draining) stop(Reason::PumpFault,now);
   if (report_.phase == SchedulePhase::Between) {
     if (pump_.ready(now)) batch(now);
@@ -289,49 +333,67 @@ void MasterScheduler::tick(uint32_t now) {
     return;
   }
   if (report_.phase == SchedulePhase::Preparing || report_.phase == SchedulePhase::Opening) {
+    if (report_.phase==SchedulePhase::Preparing && elapsed(now,stageAt_,15000)) {
+      guard_=preflight_ ? "PROTOCOL_MISMATCH" : "PREPARE_TIMEOUT";
+      stop(preflight_ ? Reason::Protocol : Reason::Transport,now); return;
+    }
     // Capability probes for ALL selected nodes finish before any Start.
     const uint32_t targets = preflight_ ? report_.selected : batch_;
     const uint32_t acked = report_.phase == SchedulePhase::Preparing ? prepared_ : opened_;
     bool allCapable = true;
-    for (size_t i=0;i<MaxNodes;++i) {
-      const uint32_t bit=uint32_t(1)<<i; if (!(targets & bit)) continue;
+    // First submissions precede retries; rotate the first slot for fair admission.
+    for (unsigned pass=0;pass<2;++pass) for (size_t j=0;j<MaxNodes;++j) {
+      const size_t i=(commandCursor_+j)%MaxNodes;
+      const uint32_t bit=uint32_t(1)<<i; if (!(targets & bit) || (closed_ & bit)) continue;
       auto &n=nodes_[i];
       if (preflight_) { if (n.capable) continue; allCapable=false; }
       else if (acked & bit) continue;
-      const uint32_t backoff = n.attempts <= 1 ? 300 : n.attempts == 2 ? 600 : 1000;
-      if (n.commandPending || (n.commandSent && !elapsed(now,n.commandAt,backoff))) continue;
-      bool ok;
+      if ((n.attempts==0)!=(pass==0) || n.attempts>=3 || n.commandPending ||
+          (n.commandSent && !elapsed(now,n.commandAt,1500))) continue;
+      MeshTxGovernor::Admission admission;
       if (preflight_) {
-        auto p=packet(Op::CapabilitiesGet,n.config.address); Writer w{p}; w.u32(capNonce_); ok=net_.send(p);
-      } else ok=sendNode(i,report_.phase == SchedulePhase::Preparing ? Op::Prepare : Op::Start);
-      if (ok) n.commandPending=true; else { stop(Reason::Transport,now); return; }
+        auto p=packet(Op::CapabilitiesGet,n.config.address); Writer w{p}; w.u32(capNonce_);
+        admission=net_.send(p) ? MeshTxGovernor::Admission::Accepted : MeshTxGovernor::Admission::Failed;
+      } else admission=sendNode(i,report_.phase==SchedulePhase::Preparing ? Op::Prepare : Op::Start);
+      if (admission==MeshTxGovernor::Admission::Accepted) n.commandPending=true;
+      else if (admission==MeshTxGovernor::Admission::Failed) { guard_="TX_ERROR"; stop(Reason::Transport,now); return; }
     }
+    commandCursor_=(commandCursor_+1)%MaxNodes;
     if (preflight_ && allCapable) {
       preflight_=false; stageAt_=now;
-      for (auto &n:nodes_) { n.commandPending=n.commandSent=false; n.attempts=0; }
+      for (auto &n:nodes_) { n.commandPending=n.commandSent=n.commandCommitted=n.commandAccepted=n.commandEarly=false; n.attempts=0; }
       return;
     }
     if (report_.phase == SchedulePhase::Preparing && !preflight_ && (prepared_ & batch_) == batch_) {
       report_.phase=SchedulePhase::Opening; stageAt_=now;
-      for (auto &n:nodes_) { n.commandPending=n.commandSent=false; n.attempts=0; }
+      for (auto &n:nodes_) { n.commandPending=n.commandSent=n.commandCommitted=n.commandAccepted=n.commandEarly=false; n.attempts=0; }
     }
     if (report_.phase == SchedulePhase::Opening) {
       // Fixed bootstrap starts at the FIRST actual API submission, never on a retry.
-      if ((bootstrap_ && elapsed(now,bootstrapAt_,2400)) || elapsed(now,stageAt_,4000)) {
+      if ((bootstrap_ && elapsed(now,bootstrapAt_,4000)) || (!bootstrap_ && elapsed(now,stageAt_,1000))) {
+        guard_=bootstrap_ ? "BOOTSTRAP_TIMEOUT" : "START_DISPATCH_TIMEOUT";
         stop(Reason::Transport,now); return;
       }
       if (closed_ == batch_) { report_.phase=SchedulePhase::Draining; stageAt_=now; return; }
       leases(now); if (report_.phase != SchedulePhase::Opening) return;
-      bool fresh = bootstrap_ && (opened_ & batch_) == batch_;
+      bool fresh = bootstrap_ && ((opened_ | closed_) & batch_) == batch_;
       for (size_t i=0;i<MaxNodes;++i) if ((batch_ & (uint32_t(1)<<i)) && !(closed_ & (uint32_t(1)<<i))) {
         const auto &n=nodes_[i];
-        if (!n.leaseAckSeen || elapsed(now,n.leaseAckAt,1001) || int32_t(n.leaseAckAt-n.openedAt)<0) fresh=false;
+        if (n.leaseAckSeen && elapsed(now,n.leaseAckAt,2000)) guard_="LEASE_PROOF_OLD";
+        if (!n.startIssued || !n.commandAccepted || !n.startAckSeen || !n.leaseAckSeen || elapsed(now,n.leaseAckAt,2000) || int32_t(n.leaseAckAt-n.startAckAt)<0) fresh=false;
       }
       if (fresh) {
         if (pump_.start(report_.key,++pumpSeq_,now)!=Reply::Ok) stop(Reason::PumpFault,now);
-        else { report_.phase=SchedulePhase::Supplying; stageAt_=pumpRenewAt_=now; }
+        else {
+          guard_="NONE"; report_.phase=SchedulePhase::Supplying; stageAt_=pumpRenewAt_=now;
+          for (size_t i=0;i<MaxNodes;++i) if (batch_ & (uint32_t(1)<<i)) {
+            auto &n=nodes_[i]; uint32_t minimum=n.leaseAt+1000;
+            if(int32_t(now-minimum)>0) minimum=now;
+            n.nextLeaseAt=minimum+(leasePhase(size_t(i))+1000-uint32_t(minimum-now)%1000)%1000;
+          }
+        }
       }
-    } else if (elapsed(now,stageAt_,10000)) stop(preflight_ ? Reason::Protocol : Reason::Transport,now);
+    } else if (elapsed(now,stageAt_,15000)) stop(preflight_ ? Reason::Protocol : Reason::Transport,now);
   } else if (report_.phase == SchedulePhase::Supplying) {
     bool expired=false;
     for (size_t i=0;i<MaxNodes;++i) {
@@ -352,7 +414,7 @@ void MasterScheduler::tick(uint32_t now) {
     }
   } else if (report_.phase == SchedulePhase::Draining) {
     if (abort_ && elapsed(now,closeAt_,700)) { closeBatch(stopReason_); closeAt_=now; }
-    if ((final_ & batch_) != batch_ && elapsed(now,txAt_,300)) {
+    if ((final_ & batch_) != batch_ && elapsed(now,stageAt_,3500) && elapsed(now,txAt_,1000)) {
       for (size_t j=0;j<MaxNodes;++j) {
         const size_t i=cursor_++%MaxNodes;
         if ((batch_ & (uint32_t(1)<<i)) && !(final_ & (uint32_t(1)<<i))) { sendNode(i,Op::ResultQuery); break; }

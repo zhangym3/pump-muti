@@ -23,9 +23,9 @@ MeshTransport *instance = nullptr;
 uint8_t uuid[16] = {0xDD, 0xDD, 0x50, 0x4D};
 esp_ble_mesh_cfg_srv_t config;
 esp_ble_mesh_model_op_t operations[] = {
-  {ESP_BLE_MESH_MODEL_OP_3(0xC0, CompanyId), 35, 0},
+  {ESP_BLE_MESH_MODEL_OP_3(0xC0, CompanyId), 39, 0},
   {ESP_BLE_MESH_MODEL_OP_3(0xC1, CompanyId), 8, 0},
-  {ESP_BLE_MESH_MODEL_OP_3(0xC2, CompanyId), 12, 0},
+  {ESP_BLE_MESH_MODEL_OP_3(0xC2, CompanyId), 8, 0},
   {ESP_BLE_MESH_MODEL_OP_3(0xC3, CompanyId), 9, 0},
   {ESP_BLE_MESH_MODEL_OP_3(0xC4, CompanyId), 8, 0},
   {ESP_BLE_MESH_MODEL_OP_3(0xC5, CompanyId), 27, 0},
@@ -37,10 +37,14 @@ esp_ble_mesh_model_op_t operations[] = {
   {ESP_BLE_MESH_MODEL_OP_3(0xCB, CompanyId), 6, 0},
   {ESP_BLE_MESH_MODEL_OP_3(0xCC, CompanyId), 4, 0},
   {ESP_BLE_MESH_MODEL_OP_3(0xCD, CompanyId), 14, 0},
-  {ESP_BLE_MESH_MODEL_OP_3(0xCE, CompanyId), 13, 0},
+  {ESP_BLE_MESH_MODEL_OP_3(0xCE, CompanyId), 8, 0},
   {ESP_BLE_MESH_MODEL_OP_3(0xCF, CompanyId), 10, 0},
   {ESP_BLE_MESH_MODEL_OP_3(0xD0, CompanyId), 4, 0},
   {ESP_BLE_MESH_MODEL_OP_3(0xD1, CompanyId), 12, 0},
+  {ESP_BLE_MESH_MODEL_OP_3(0xD2, CompanyId), 8, 0},
+  {ESP_BLE_MESH_MODEL_OP_3(0xD3, CompanyId), 8, 0},
+  {ESP_BLE_MESH_MODEL_OP_3(0xD4, CompanyId), 8, 0},
+  {ESP_BLE_MESH_MODEL_OP_3(0xD5, CompanyId), 8, 0},
   ESP_BLE_MESH_MODEL_OP_END
 };
 esp_ble_mesh_client_t meshConfigClient;
@@ -62,12 +66,12 @@ void modelCb(esp_ble_mesh_model_cb_event_t event, esp_ble_mesh_model_cb_param_t 
   if (!m.ctx || m.ctx->net_idx != 0 || m.ctx->app_idx != 0 ||
       m.length > sizeof(Packet::bytes) || (m.opcode & 0xFFFF) != CompanyId) return;
   const uint8_t code = uint8_t(m.opcode >> 16);
-  if (code < uint8_t(Op::Prepare) || code > uint8_t(Op::Capabilities)) return;
+  if (code < uint8_t(Op::Prepare) || code > uint8_t(Op::StartOK)) return;
   auto in = packet(Op(code), m.ctx->addr); in.size = uint8_t(m.length);
   memcpy(in.bytes, m.msg, in.size); instance->incoming(in);
 }
 bool urgent(const Packet &p) {
-  return p.op == Op::Close || p.op == Op::Lease || p.op == Op::LeaseAck ||
+  return p.op == Op::TargetClosed || p.op == Op::TargetClosedAck || p.op == Op::PrepareOK || p.op == Op::StartOK || p.op == Op::Close || p.op == Op::Lease || p.op == Op::LeaseAck ||
     p.op == Op::Result || p.op == Op::ResultAck || p.op == Op::CommandAck ||
     (p.op == Op::Request && p.size && p.bytes[0] == uint8_t(Action::Stop));
 }
@@ -128,6 +132,15 @@ bool MeshTransport::send(const Packet &p) {
 void MeshTransport::fence(JobKey job) {
   portENTER_CRITICAL(&txLock_); tx_.fence(job); portEXIT_CRITICAL(&txLock_);
 }
+void MeshTransport::retire(uint16_t peer, JobKey job, Op op) {
+  portENTER_CRITICAL(&txLock_); tx_.retire(peer,job,op); portEXIT_CRITICAL(&txLock_);
+}
+bool MeshTransport::beginLeaseScope(JobKey job, uint32_t &floor) {
+  portENTER_CRITICAL(&txLock_); const bool ok=tx_.beginLeaseScope(job,floor); portEXIT_CRITICAL(&txLock_); return ok;
+}
+MeshTxGovernor::Admission MeshTransport::prepare(const Packet &p) {
+  portENTER_CRITICAL(&txLock_); const auto result=tx_.prepare(p,uint32_t(esp_timer_get_time()/1000)); portEXIT_CRITICAL(&txLock_); return result;
+}
 bool MeshTransport::healthy() const {
   portENTER_CRITICAL(&txLock_); const bool ok = tx_.healthy(); portEXIT_CRITICAL(&txLock_); return ok;
 }
@@ -151,15 +164,17 @@ extern "C" void esp_ble_mesh_tracked_send_event(uint32_t ticket, uint8_t event, 
   if (instance) instance->trackedEvent(ticket,event,error);
 }
 void MeshTransport::incoming(const Packet &p) {
+  if (!controlFormat(p)) return;
   // Master receives remote state and forwarded requests; peer authorization is checked by Application.
   if (p.op != Op::Hello && p.op != Op::Result && p.op != Op::Request &&
-      p.op != Op::CommissionReply && p.op != Op::LeaseAck && p.op != Op::CommandAck && p.op != Op::Capabilities) return;
+      p.op != Op::TargetClosed && p.op != Op::PrepareOK && p.op != Op::StartOK && p.op != Op::CommissionReply && p.op != Op::LeaseAck && p.op != Op::CommandAck && p.op != Op::Capabilities) return;
   if (xQueueSend(urgent(p) ? urgentRx_ : rx_, &p, 0) != pdTRUE && urgent(p)) overflow_ = true;
 }
 bool MeshTransport::receive(Packet &p) {
   return xQueueReceive(urgentRx_, &p, 0) == pdTRUE || xQueueReceive(rx_, &p, 0) == pdTRUE;
 }
 void MeshTransport::worker() {
+  uint32_t memoryAt=uint32_t(esp_timer_get_time()/1000);
   for (;;) {
     MeshTxGovernor::Dispatch d;
     bool dispatch = false;
@@ -185,6 +200,11 @@ void MeshTransport::worker() {
         (unsigned long)t.at,(unsigned long)t.ticket,t.peer,t.op,t.event,(unsigned long)t.job.epoch,
         (unsigned long)t.job.id,(unsigned long)t.sequence,(unsigned long)t.revision,(unsigned long)t.issuedAt,
         (unsigned long)(t.at-t.issuedAt),(unsigned long)t.queuedAt,(unsigned long)(t.issuedAt-t.queuedAt),t.segmented,t.error);
+    }
+    const uint32_t memoryNow=uint32_t(esp_timer_get_time()/1000);
+    if (elapsed(memoryNow,memoryAt,10000)) {
+      memoryAt=memoryNow;
+      ESP_LOGI("runtime_mem", "mesh_stack_min_bytes=%lu",(unsigned long)uxTaskGetStackHighWaterMark(nullptr));
     }
     vTaskDelay(pdMS_TO_TICKS(5));
   }

@@ -61,6 +61,7 @@ class Application {
   uint32_t testPublishedAt_ = 0;
   uint32_t pwmRevision_ = 0;
   uint16_t ownerIngress_ = 0;
+  const char *lastGuard_ = "NONE";
   SchedulePhase lastPhase_ = SchedulePhase::Idle;
 };
 }

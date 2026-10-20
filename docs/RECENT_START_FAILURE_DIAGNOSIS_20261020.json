@@ -1,0 +1,706 @@
+{
+  "schema": 1,
+  "date": "2026-10-20",
+  "timezone": "Asia/Shanghai",
+  "scope": "Read-only investigation; no firmware changes or automated pump start. User initiated jobs 142:73 and 142:74 in APP.",
+  "runtime": {
+    "master_build": "18ed7b18",
+    "slave_build": "c0f6b78c",
+    "epoch": 142,
+    "master_port": "COM5",
+    "slave_port": "COM6",
+    "observed_slave_count": 1
+  },
+  "history_summary": {
+    "records": 19,
+    "epoch_142_records": 12,
+    "epoch_142_zero_pulse_transport_jobs": [
+      "142:65",
+      "142:69",
+      "142:70",
+      "142:71",
+      "142:74"
+    ],
+    "epoch_142_with_pulses": 7,
+    "epoch_142_successful_final_records": 0
+  },
+  "confirmed_reproduction": "142:74",
+  "failure_classification": "Bootstrap deadline elapsed before matching first LeaseAck arrived. Same-peer segmented CommandAck occupied the reply channel. No observed Mesh resource-exhaustion fault.",
+  "metrics": {
+    "master_first_start_t_ms": 683486,
+    "master_first_lease_t_ms": 684883,
+    "master_abort_t_ms": 685886,
+    "master_first_lease_ack_t_ms": 686166,
+    "start_to_abort_ms": 2400,
+    "start_to_first_lease_ms": 1397,
+    "lease_rtt_ms": 1283,
+    "ack_after_abort_ms": 280,
+    "slave_valve_command_on_ms": 2234,
+    "lease_ack_queue_wait_ms": 459,
+    "lease_ack_sar_ms": 649
+  },
+  "history": [
+    {
+      "job": "141:55",
+      "record_updated_local": "2026-10-20T19:44:10.924+08:00",
+      "target_ml": 250,
+      "requested_max_ms": 60000,
+      "master_reason": "PROTOCOL",
+      "slave_reason": "PROTOCOL",
+      "sensor_derived_ml": 0,
+      "pulses": 0,
+      "app_outcome": "FINISHED",
+      "master_phase": "7",
+      "master_failed": "1",
+      "master_unknown": "0"
+    },
+    {
+      "job": "141:56",
+      "record_updated_local": "2026-10-20T19:44:16.743+08:00",
+      "target_ml": 250,
+      "requested_max_ms": 60000,
+      "master_reason": "PROTOCOL",
+      "slave_reason": "PROTOCOL",
+      "sensor_derived_ml": 0,
+      "pulses": 0,
+      "app_outcome": "FINISHED",
+      "master_phase": "7",
+      "master_failed": "1",
+      "master_unknown": "0"
+    },
+    {
+      "job": "141:58",
+      "record_updated_local": "2026-10-20T19:45:03.358+08:00",
+      "target_ml": 250,
+      "requested_max_ms": 60000,
+      "master_reason": "PROTOCOL",
+      "slave_reason": "PROTOCOL",
+      "sensor_derived_ml": 0,
+      "pulses": 0,
+      "app_outcome": "FINISHED",
+      "master_phase": "7",
+      "master_failed": "1",
+      "master_unknown": "0"
+    },
+    {
+      "job": "141:59",
+      "record_updated_local": "2026-10-20T19:45:06.175+08:00",
+      "target_ml": 250,
+      "requested_max_ms": 60000,
+      "master_reason": "PROTOCOL",
+      "slave_reason": "PROTOCOL",
+      "sensor_derived_ml": 0,
+      "pulses": 0,
+      "app_outcome": "FINISHED",
+      "master_phase": "7",
+      "master_failed": "1",
+      "master_unknown": "0"
+    },
+    {
+      "job": "141:60",
+      "record_updated_local": "2026-10-20T19:46:13.501+08:00",
+      "target_ml": 250,
+      "requested_max_ms": 60000,
+      "master_reason": "PROTOCOL",
+      "slave_reason": "PROTOCOL",
+      "sensor_derived_ml": 0,
+      "pulses": 0,
+      "app_outcome": "FINISHED",
+      "master_phase": "7",
+      "master_failed": "1",
+      "master_unknown": "0"
+    },
+    {
+      "job": "141:61",
+      "record_updated_local": "2026-10-20T19:47:15.720+08:00",
+      "target_ml": 500,
+      "requested_max_ms": 60000,
+      "master_reason": "PROTOCOL",
+      "slave_reason": "PROTOCOL",
+      "sensor_derived_ml": 0,
+      "pulses": 0,
+      "app_outcome": "FINISHED",
+      "master_phase": "7",
+      "master_failed": "1",
+      "master_unknown": "0"
+    },
+    {
+      "job": "141:62",
+      "record_updated_local": "2026-10-20T20:23:21.075+08:00",
+      "target_ml": 500,
+      "requested_max_ms": 60000,
+      "master_reason": "PROTOCOL",
+      "slave_reason": "PROTOCOL",
+      "sensor_derived_ml": 0,
+      "pulses": 0,
+      "app_outcome": "FINISHED",
+      "master_phase": "7",
+      "master_failed": "1",
+      "master_unknown": "0"
+    },
+    {
+      "job": "142:63",
+      "record_updated_local": "2026-10-20T20:24:31.104+08:00",
+      "target_ml": 500,
+      "requested_max_ms": 60000,
+      "master_reason": "LEASE",
+      "slave_reason": "RUNTIME",
+      "sensor_derived_ml": 259,
+      "pulses": 1528,
+      "app_outcome": "FINISHED",
+      "master_phase": "7",
+      "master_failed": "1",
+      "master_unknown": "0"
+    },
+    {
+      "job": "142:64",
+      "record_updated_local": "2026-10-20T20:25:01.608+08:00",
+      "target_ml": 100,
+      "requested_max_ms": 60000,
+      "master_reason": "LEASE",
+      "slave_reason": "TAIL_FLOW",
+      "sensor_derived_ml": 127,
+      "pulses": 750,
+      "app_outcome": "FINISHED",
+      "master_phase": "7",
+      "master_failed": "1",
+      "master_unknown": "0"
+    },
+    {
+      "job": "142:65",
+      "record_updated_local": "2026-10-20T20:25:29.025+08:00",
+      "target_ml": 100,
+      "requested_max_ms": 60000,
+      "master_reason": "TRANSPORT",
+      "slave_reason": "TRANSPORT",
+      "sensor_derived_ml": 0,
+      "pulses": 0,
+      "app_outcome": "FINISHED",
+      "master_phase": "7",
+      "master_failed": "1",
+      "master_unknown": "0"
+    },
+    {
+      "job": "142:66",
+      "record_updated_local": "2026-10-20T20:25:48.862+08:00",
+      "target_ml": 100,
+      "requested_max_ms": 60000,
+      "master_reason": "TAIL_FLOW",
+      "slave_reason": "TAIL_FLOW",
+      "sensor_derived_ml": 126,
+      "pulses": 746,
+      "app_outcome": "FINISHED",
+      "master_phase": "7",
+      "master_failed": "1",
+      "master_unknown": "0"
+    },
+    {
+      "job": "142:67",
+      "record_updated_local": "2026-10-20T20:26:31.483+08:00",
+      "target_ml": 100,
+      "requested_max_ms": 60000,
+      "master_reason": "TAIL_FLOW",
+      "slave_reason": "TAIL_FLOW",
+      "sensor_derived_ml": 119,
+      "pulses": 702,
+      "app_outcome": "FINISHED",
+      "master_phase": "7",
+      "master_failed": "1",
+      "master_unknown": "0"
+    },
+    {
+      "job": "142:68",
+      "record_updated_local": "2026-10-20T20:27:02.673+08:00",
+      "target_ml": 100,
+      "requested_max_ms": 60000,
+      "master_reason": "TAIL_FLOW",
+      "slave_reason": "TAIL_FLOW",
+      "sensor_derived_ml": 119,
+      "pulses": 703,
+      "app_outcome": "FINISHED",
+      "master_phase": "7",
+      "master_failed": "1",
+      "master_unknown": "0"
+    },
+    {
+      "job": "142:69",
+      "record_updated_local": "2026-10-20T20:27:21.750+08:00",
+      "target_ml": 250,
+      "requested_max_ms": 60000,
+      "master_reason": "TRANSPORT",
+      "slave_reason": "TRANSPORT",
+      "sensor_derived_ml": 0,
+      "pulses": 0,
+      "app_outcome": "FINISHED",
+      "master_phase": "7",
+      "master_failed": "1",
+      "master_unknown": "0"
+    },
+    {
+      "job": "142:70",
+      "record_updated_local": "2026-10-20T20:27:29.122+08:00",
+      "target_ml": 250,
+      "requested_max_ms": 60000,
+      "master_reason": "TRANSPORT",
+      "slave_reason": "TRANSPORT",
+      "sensor_derived_ml": 0,
+      "pulses": 0,
+      "app_outcome": "FINISHED",
+      "master_phase": "7",
+      "master_failed": "1",
+      "master_unknown": "0"
+    },
+    {
+      "job": "142:71",
+      "record_updated_local": "2026-10-20T20:27:38.427+08:00",
+      "target_ml": 250,
+      "requested_max_ms": 60000,
+      "master_reason": "TRANSPORT",
+      "slave_reason": "TRANSPORT",
+      "sensor_derived_ml": 0,
+      "pulses": 0,
+      "app_outcome": "FINISHED",
+      "master_phase": "7",
+      "master_failed": "1",
+      "master_unknown": "0"
+    },
+    {
+      "job": "142:72",
+      "record_updated_local": "2026-10-20T20:28:28.835+08:00",
+      "target_ml": 200,
+      "requested_max_ms": 60000,
+      "master_reason": "TAIL_FLOW",
+      "slave_reason": "TAIL_FLOW",
+      "sensor_derived_ml": 219,
+      "pulses": 1291,
+      "app_outcome": "FINISHED",
+      "master_phase": "7",
+      "master_failed": "1",
+      "master_unknown": "0"
+    },
+    {
+      "job": "142:73",
+      "record_updated_local": "2026-10-20T20:33:54.529+08:00",
+      "target_ml": 200,
+      "requested_max_ms": 60000,
+      "master_reason": "TAIL_FLOW",
+      "slave_reason": "TAIL_FLOW",
+      "sensor_derived_ml": 220,
+      "pulses": 1296,
+      "app_outcome": "FINISHED",
+      "master_phase": "7",
+      "master_failed": "1",
+      "master_unknown": "0"
+    },
+    {
+      "job": "142:74",
+      "record_updated_local": "2026-10-20T20:34:03.155+08:00",
+      "target_ml": 200,
+      "requested_max_ms": 60000,
+      "master_reason": "TRANSPORT",
+      "slave_reason": "TRANSPORT",
+      "sensor_derived_ml": 0,
+      "pulses": 0,
+      "app_outcome": "FINISHED",
+      "master_phase": "7",
+      "master_failed": "1",
+      "master_unknown": "0"
+    }
+  ],
+  "evidence": [
+    {
+      "received_utc": "2026-10-20T12:33:18.259+00:00",
+      "source": "COM5",
+      "text": "I (645160) schedule: t=644581 job=142:73 phase=1 reason=NONE selected=00000001 done=00000000 failed=00000000 unknown=00000000"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:19.600+00:00",
+      "source": "COM5",
+      "text": "I (646504) schedule: t=645951 job=142:73 phase=2 reason=NONE selected=00000001 done=00000000 failed=00000000 unknown=00000000"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:20.798+00:00",
+      "source": "COM5",
+      "text": "I (647689) lease_rx: t=647136 peer=0002 job=142:73 seq=170 result=OK matched=1 issued=646784 age=352 applied=1"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:20.798+00:00",
+      "source": "COM5",
+      "text": "I (647692) schedule: t=647136 job=142:73 phase=3 reason=NONE selected=00000001 done=00000000 failed=00000000 unknown=00000000"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:50.520+00:00",
+      "source": "COM6",
+      "text": "I (666780) output: t=666511 command=0"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:53.548+00:00",
+      "source": "COM6",
+      "text": "HALL_JOB t=669517 job=142:73 phase=FAULT reason=TAIL_FLOW valve=0 job_pulses=1296 job_ml=220"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:53.735+00:00",
+      "source": "COM5",
+      "text": "I (680640) output: t=680086 command=0"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:53.756+00:00",
+      "source": "COM5",
+      "text": "FLOW addr=0002 job=142:73 pulses=1296 ml=220 phase=FAULT revision=1221 terminal=1 measured=1 reason=TAIL_FLOW"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:53.777+00:00",
+      "source": "COM5",
+      "text": "I (680678) schedule: t=680086 job=142:73 phase=7 reason=TAIL_FLOW selected=00000001 done=00000001 failed=00000001 unknown=00000000"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:54.163+00:00",
+      "source": "COM5",
+      "text": "FLOW addr=0002 job=142:73 pulses=1296 ml=220 phase=FAULT revision=1221 terminal=1 measured=1 reason=TAIL_FLOW"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:54.205+00:00",
+      "source": "COM5",
+      "text": "FLOW addr=0002 job=142:73 pulses=1296 ml=220 phase=FAULT revision=1221 terminal=1 measured=1 reason=TAIL_FLOW"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:54.371+00:00",
+      "source": "COM6",
+      "text": "I (670628) mesh_diag: healthy=1 submitted=319 ended=319 merged=34 expired=3 faults=0 hello_timeout=0 peak_sar=1 peak_pending=3 sar_max_ms=1957 tick_max_ms=50 trace_lost=0"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:54.393+00:00",
+      "source": "COM5",
+      "text": "I (681274) mesh_diag: healthy=1 submitted=398 ended=273 merged=3 expired=0 faults=0 hello_timeout=0 peak_sar=1 peak_pending=2 sar_max_ms=1516 tick_max_ms=50 trace_lost=0"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:54.539+00:00",
+      "source": "COM6",
+      "text": "HALL_JOB t=670519 job=142:73 phase=FAULT reason=TAIL_FLOW valve=0 job_pulses=1296 job_ml=220"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:55.546+00:00",
+      "source": "COM6",
+      "text": "HALL_JOB t=671519 job=142:73 phase=FAULT reason=TAIL_FLOW valve=0 job_pulses=1296 job_ml=220"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:56.737+00:00",
+      "source": "COM5",
+      "text": "I (683629) schedule: t=683041 job=142:74 phase=1 reason=NONE selected=00000001 done=00000000 failed=00000000 unknown=00000000"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:56.758+00:00",
+      "source": "COM5",
+      "text": "I (683645) mesh_tx: t=683079 ticket=400 peer=0002 op=c0 event=0 job=142:74 seq=0 rev=0 issued=683079 age=0 queued=683077 wait=2 seg=1 err=0"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:56.758+00:00",
+      "source": "COM5",
+      "text": "I (683647) mesh_tx: t=683092 ticket=400 peer=0002 op=c0 event=1 job=142:74 seq=0 rev=0 issued=683079 age=13 queued=683077 wait=2 seg=1 err=0"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:56.966+00:00",
+      "source": "COM6",
+      "text": "I (673223) mesh_tx: t=672952 ticket=321 peer=0001 op=cf event=0 job=142:74 seq=0 rev=0 issued=672952 age=0 queued=672952 wait=0 seg=1 err=0"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:56.966+00:00",
+      "source": "COM6",
+      "text": "I (673226) mesh_tx: t=672955 ticket=321 peer=0001 op=cf event=1 job=142:74 seq=0 rev=0 issued=672952 age=3 queued=672952 wait=0 seg=1 err=0"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:57.028+00:00",
+      "source": "COM5",
+      "text": "I (683917) mesh_tx: t=683363 ticket=400 peer=0002 op=c0 event=3 job=142:74 seq=0 rev=0 issued=683079 age=284 queued=683077 wait=2 seg=1 err=0"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:57.049+00:00",
+      "source": "COM5",
+      "text": "I (683946) mesh_tx: t=683382 ticket=401 peer=0002 op=c0 event=0 job=142:74 seq=0 rev=0 issued=683382 age=0 queued=683381 wait=1 seg=1 err=0"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:57.070+00:00",
+      "source": "COM5",
+      "text": "I (683950) mesh_tx: t=683393 ticket=401 peer=0002 op=c0 event=1 job=142:74 seq=0 rev=0 issued=683382 age=11 queued=683381 wait=1 seg=1 err=0"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:57.133+00:00",
+      "source": "COM5",
+      "text": "I (684034) schedule: t=683481 job=142:74 phase=2 reason=NONE selected=00000001 done=00000000 failed=00000000 unknown=00000000"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:57.154+00:00",
+      "source": "COM5",
+      "text": "I (684042) mesh_tx: t=683486 ticket=402 peer=0002 op=c1 event=0 job=142:74 seq=0 rev=0 issued=683486 age=0 queued=683486 wait=0 seg=0 err=0"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:57.156+00:00",
+      "source": "COM5",
+      "text": "I (684047) mesh_tx: t=683488 ticket=402 peer=0002 op=c1 event=1 job=142:74 seq=0 rev=0 issued=683486 age=2 queued=683486 wait=0 seg=0 err=0"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:57.321+00:00",
+      "source": "COM6",
+      "text": "I (673581) mesh_tx: t=673312 ticket=321 peer=0001 op=cf event=3 job=142:74 seq=0 rev=0 issued=672952 age=360 queued=672952 wait=0 seg=1 err=0"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:57.424+00:00",
+      "source": "COM6",
+      "text": "I (673671) output: t=673402 command=1"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:57.425+00:00",
+      "source": "COM6",
+      "text": "I (673682) mesh_tx: t=673404 ticket=322 peer=0001 op=cf event=0 job=142:74 seq=0 rev=0 issued=673404 age=0 queued=673402 wait=2 seg=1 err=0"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:57.425+00:00",
+      "source": "COM6",
+      "text": "I (673684) mesh_tx: t=673413 ticket=322 peer=0001 op=cf event=1 job=142:74 seq=0 rev=0 issued=673404 age=9 queued=673402 wait=2 seg=1 err=0"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:57.446+00:00",
+      "source": "COM5",
+      "text": "I (684343) mesh_tx: t=683787 ticket=403 peer=0002 op=c1 event=0 job=142:74 seq=0 rev=0 issued=683787 age=0 queued=683786 wait=1 seg=0 err=0"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:57.447+00:00",
+      "source": "COM6",
+      "text": "HALL_JOB t=673402 job=142:74 phase=OPEN_COMMAND_SENT reason=NONE valve=1 job_pulses=0 job_ml=0"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:57.468+00:00",
+      "source": "COM5",
+      "text": "I (684345) mesh_tx: t=683789 ticket=403 peer=0002 op=c1 event=1 job=142:74 seq=0 rev=0 issued=683787 age=2 queued=683786 wait=1 seg=0 err=0"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:58.062+00:00",
+      "source": "COM5",
+      "text": "I (684952) mesh_tx: t=684386 ticket=401 peer=0002 op=c0 event=3 job=142:74 seq=0 rev=0 issued=683382 age=1004 queued=683381 wait=1 seg=1 err=0"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:58.063+00:00",
+      "source": "COM5",
+      "text": "I (684954) mesh_tx: t=684397 ticket=404 peer=0002 op=c1 event=0 job=142:74 seq=0 rev=0 issued=684397 age=0 queued=684391 wait=6 seg=0 err=0"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:58.085+00:00",
+      "source": "COM5",
+      "text": "I (684967) mesh_tx: t=684398 ticket=404 peer=0002 op=c1 event=1 job=142:74 seq=0 rev=0 issued=684397 age=1 queued=684391 wait=6 seg=0 err=0"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:58.434+00:00",
+      "source": "COM6",
+      "text": "HALL_JOB t=674404 job=142:74 phase=OPEN_COMMAND_SENT reason=NONE valve=1 job_pulses=0 job_ml=0"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:58.537+00:00",
+      "source": "COM5",
+      "text": "I (685439) mesh_tx: t=684883 ticket=405 peer=0002 op=c2 event=0 job=142:74 seq=204 rev=0 issued=684883 age=0 queued=684881 wait=2 seg=1 err=0"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:58.537+00:00",
+      "source": "COM6",
+      "text": "I (674796) mesh_tx: t=674520 ticket=322 peer=0001 op=cf event=3 job=142:74 seq=0 rev=0 issued=673404 age=1116 queued=673402 wait=2 seg=1 err=0"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:58.538+00:00",
+      "source": "COM6",
+      "text": "I (674798) mesh_tx: t=674521 ticket=323 peer=0001 op=cf event=0 job=142:74 seq=0 rev=0 issued=674521 age=0 queued=673477 wait=1044 seg=1 err=0"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:58.538+00:00",
+      "source": "COM6",
+      "text": "I (674799) mesh_tx: t=674528 ticket=323 peer=0001 op=cf event=1 job=142:74 seq=0 rev=0 issued=674521 age=7 queued=673477 wait=1044 seg=1 err=0"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:58.560+00:00",
+      "source": "COM5",
+      "text": "I (685441) mesh_tx: t=684885 ticket=405 peer=0002 op=c2 event=1 job=142:74 seq=204 rev=0 issued=684883 age=2 queued=684881 wait=2 seg=1 err=0"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:58.765+00:00",
+      "source": "COM5",
+      "text": "I (685653) mesh_tx: t=685099 ticket=405 peer=0002 op=c2 event=3 job=142:74 seq=204 rev=0 issued=684883 age=216 queued=684881 wait=2 seg=1 err=0"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:59.175+00:00",
+      "source": "COM6",
+      "text": "I (675436) mesh_tx: t=675167 ticket=323 peer=0001 op=cf event=3 job=142:74 seq=0 rev=0 issued=674521 age=646 queued=673477 wait=1044 seg=1 err=0"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:59.195+00:00",
+      "source": "COM6",
+      "text": "I (675449) mesh_tx: t=675173 ticket=324 peer=0001 op=ce event=0 job=142:74 seq=204 rev=0 issued=675173 age=0 queued=674714 wait=459 seg=1 err=0"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:59.195+00:00",
+      "source": "COM6",
+      "text": "I (675451) mesh_tx: t=675181 ticket=324 peer=0001 op=ce event=1 job=142:74 seq=204 rev=0 issued=675173 age=8 queued=674714 wait=459 seg=1 err=0"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:59.420+00:00",
+      "source": "COM6",
+      "text": "HALL_JOB t=675404 job=142:74 phase=OPEN_COMMAND_SENT reason=NONE valve=1 job_pulses=0 job_ml=0"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:59.545+00:00",
+      "source": "COM5",
+      "text": "I (686439) schedule: t=685886 job=142:74 phase=4 reason=TRANSPORT selected=00000001 done=00000000 failed=00000001 unknown=00000000"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:59.650+00:00",
+      "source": "COM6",
+      "text": "I (675904) output: t=675636 command=0"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:59.814+00:00",
+      "source": "COM5",
+      "text": "I (686719) lease_rx: t=686166 peer=0002 job=142:74 seq=204 result=OK matched=1 issued=684883 age=1283 applied=0"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:59.856+00:00",
+      "source": "COM6",
+      "text": "I (676098) mesh_tx: t=675822 ticket=324 peer=0001 op=ce event=3 job=142:74 seq=204 rev=0 issued=675173 age=649 queued=674714 wait=459 seg=1 err=0"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:59.857+00:00",
+      "source": "COM6",
+      "text": "I (676100) mesh_tx: t=675823 ticket=325 peer=0001 op=cf event=0 job=142:74 seq=0 rev=0 issued=675823 age=0 queued=673865 wait=1958 seg=1 err=0"
+    },
+    {
+      "received_utc": "2026-10-20T12:33:59.857+00:00",
+      "source": "COM6",
+      "text": "I (676102) mesh_tx: t=675830 ticket=325 peer=0001 op=cf event=1 job=142:74 seq=0 rev=0 issued=675823 age=7 queued=673865 wait=1958 seg=1 err=0"
+    },
+    {
+      "received_utc": "2026-10-20T12:34:00.164+00:00",
+      "source": "COM6",
+      "text": "HALL_JOB t=676140 job=142:74 phase=FAULT reason=TRANSPORT valve=0 job_pulses=0 job_ml=0"
+    },
+    {
+      "received_utc": "2026-10-20T12:34:01.360+00:00",
+      "source": "COM6",
+      "text": "I (677609) mesh_tx: t=677337 ticket=325 peer=0001 op=cf event=3 job=142:74 seq=0 rev=0 issued=675823 age=1514 queued=673865 wait=1958 seg=1 err=0"
+    },
+    {
+      "received_utc": "2026-10-20T12:34:02.128+00:00",
+      "source": "COM5",
+      "text": "FLOW addr=0002 job=142:74 pulses=0 ml=0 phase=FAULT revision=1220 terminal=1 measured=1 reason=TRANSPORT"
+    },
+    {
+      "received_utc": "2026-10-20T12:34:02.149+00:00",
+      "source": "COM5",
+      "text": "I (689052) schedule: t=688461 job=142:74 phase=7 reason=TRANSPORT selected=00000001 done=00000001 failed=00000001 unknown=00000000"
+    },
+    {
+      "received_utc": "2026-10-20T12:34:02.377+00:00",
+      "source": "COM5",
+      "text": "FLOW addr=0002 job=142:74 pulses=0 ml=0 phase=FAULT revision=1220 terminal=1 measured=1 reason=TRANSPORT"
+    },
+    {
+      "received_utc": "2026-10-20T12:34:02.727+00:00",
+      "source": "COM5",
+      "text": "FLOW addr=0002 job=142:74 pulses=0 ml=0 phase=FAULT revision=1220 terminal=1 measured=1 reason=TRANSPORT"
+    },
+    {
+      "received_utc": "2026-10-20T12:34:04.388+00:00",
+      "source": "COM5",
+      "text": "I (691274) mesh_diag: healthy=1 submitted=418 ended=282 merged=5 expired=0 faults=0 hello_timeout=0 peak_sar=1 peak_pending=2 sar_max_ms=1516 tick_max_ms=50 trace_lost=0"
+    },
+    {
+      "received_utc": "2026-10-20T12:34:04.388+00:00",
+      "source": "COM6",
+      "text": "I (680633) mesh_diag: healthy=1 submitted=328 ended=328 merged=43 expired=3 faults=0 hello_timeout=0 peak_sar=1 peak_pending=3 sar_max_ms=1957 tick_max_ms=50 trace_lost=0"
+    },
+    {
+      "received_utc": "2026-10-20T12:34:13.228+00:00",
+      "source": "COM6",
+      "text": "HALL_JOB t=689190 job=142:74 phase=FAULT reason=TRANSPORT valve=0 job_pulses=0 job_ml=0"
+    },
+    {
+      "received_utc": "2026-10-20T12:34:13.229+00:00",
+      "source": "COM6",
+      "text": "HALL_JOB t=689195 job=142:74 phase=FAULT reason=TRANSPORT valve=0 job_pulses=0 job_ml=0"
+    }
+  ],
+  "limitations": [
+    "Historical jobs 142:65/69/70/71 lack complete serial timelines; same root cause is unproven.",
+    "History time is record updatedAt, not exact job start or finish.",
+    "Only one slave observed; no 2-node or 5-node hardware capacity acceptance.",
+    "mL is derived from pulses and calibration, not a measuring-cup reading.",
+    "CommandAck trace lacks embedded command/result; duplicate subtype cannot be assigned precisely.",
+    "Initial capture stdout encoding failure caused one COM5 reopen before reproductions; UART output also has interleaved lines."
+  ],
+  "source_files": [
+    {
+      "path": "D:\\pump\\pump-muti\\.pio\\diagnostics\\recent-starts-20261020-203043\\capture.py",
+      "bytes": 4467,
+      "sha256": "9eb6b009ac600477e892ccec1905d948df9a95e5ac0310b2dfdb7215c4860996"
+    },
+    {
+      "path": "D:\\pump\\pump-muti\\.pio\\diagnostics\\recent-starts-20261020-203043\\capture.jsonl",
+      "bytes": 230225,
+      "sha256": "3f350de934bd0bcad0381d90b95a56fffa5aa19aa6cdb76e9d78b4fa56ebeb17"
+    },
+    {
+      "path": "D:\\pump\\pump-muti\\.pio\\diagnostics\\recent-starts-20261020-203043\\COM5.log",
+      "bytes": 82467,
+      "sha256": "30de807abc23de49ba3cb2253287b9cfc43e57394a0008598bdbec1961ce74c6"
+    },
+    {
+      "path": "D:\\pump\\pump-muti\\.pio\\diagnostics\\recent-starts-20261020-203043\\COM6.log",
+      "bytes": 63748,
+      "sha256": "de03e45ebbb36c176160a4ae762d0c900a14ed07c1c569be15848f8b7c35e5a5"
+    },
+    {
+      "path": "D:\\pump\\pump-muti\\.pio\\diagnostics\\recent-starts-20261020-203043\\phone-history.properties",
+      "bytes": 10089,
+      "sha256": "54358301e1a6cd0eac0b6709f7eb010343599cfcfc1de9463c074011f27c70f3"
+    },
+    {
+      "path": "D:\\pump\\pump-muti\\.pio\\diagnostics\\recent-starts-20261020-203043\\phone-history.json",
+      "bytes": 21393,
+      "sha256": "827752ca4a9c320c41a1aaa97782c32b56216f556c8a5b307b2aca52339a7a47"
+    },
+    {
+      "path": "D:\\pump\\pump-muti\\.pio\\diagnostics\\recent-starts-20261020-203043\\phone-history-final.properties",
+      "bytes": 11286,
+      "sha256": "21471991c694f2fd5c9e75da3f535b451e89fd5bc979541653a3de52cc834930"
+    },
+    {
+      "path": "D:\\pump\\pump-muti\\.pio\\diagnostics\\recent-starts-20261020-203043\\phone-history-final.json",
+      "bytes": 23925,
+      "sha256": "fae626ab0344dd11da258d0bdf8eb372a63dc8eade05044a596adf0517ebc5d7"
+    },
+    {
+      "path": "D:\\pump\\pump-muti\\.pio\\diagnostics\\recent-starts-20261020-203043\\phone-ble.log",
+      "bytes": 1394,
+      "sha256": "5f219dd4f59c0e23d4f462c8ee88f83fd5ceb0665c0593cacc2d35d7c79fb9d8"
+    }
+  ],
+  "capture_terminal_events": [
+    {
+      "kind": "capture_start",
+      "received_utc": "2026-10-20T12:30:43.157+00:00",
+      "ports": [
+        "COM5",
+        "COM6"
+      ],
+      "seconds": 240,
+      "dtr": false,
+      "rts": false,
+      "allowed_commands": [
+        "hello",
+        "local",
+        "nodes",
+        "hall",
+        "mesh-diag"
+      ]
+    },
+    {
+      "kind": "capture_end",
+      "received_utc": "2026-10-20T12:34:43.161+00:00"
+    }
+  ]
+}

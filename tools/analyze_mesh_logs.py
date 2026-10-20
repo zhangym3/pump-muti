@@ -29,6 +29,7 @@ def statistics(values):
 def analyze(paths):
     sessions, boots = {}, Counter()
     capture_errors = []
+    device_failures, reset_events = [], []
     for path in paths:
         path = Path(path)
         saw_capture_start = saw_capture_end = False
@@ -49,11 +50,20 @@ def analyze(paths):
                 if record.get("kind") == "capture_end":
                     saw_capture_end = True
                     capture_errors.extend(record.get("errors", []))
+                if record.get("kind") == "error":
+                    capture_errors.append({"file": str(path), "source": record.get("source", record.get("port")),
+                                           "error": record.get("text", "Capture error")})
                 if record.get("kind") != "serial":
                     continue
                 source += ":" + record.get("source", "unknown")
                 line = record.get("text", "")
             line = ANSI.sub("", line)
+            if any(marker in line for marker in ("***ERROR*** A stack overflow", "Guru Meditation Error",
+                                                  "abort() was called", "Brownout detector was triggered",
+                                                  "Task watchdog got triggered")):
+                device_failures.append({"source": source, "line": line.rstrip()})
+            if "rst:0x" in line:
+                reset_events.append({"source": source, "line": line.rstrip()})
             found = TAG.search(line)
             if not found:
                 # ESP32 boot banners delimit ticket numbering even if build log is missing.
@@ -63,9 +73,9 @@ def analyze(paths):
             tag, body = found.groups()
             fields = dict(FIELDS.findall(body))
             required = {"mesh_tx": ("ticket", "event", "issued", "age", "peer", "op"),
-                        "lease_rx": ("peer", "job", "seq", "age", "result", "matched", "applied")}.get(tag, ())
+                        "lease_rx": ("peer", "seq", "age", "result", "matched", "applied")}.get(tag, ())
             numeric = ("t", "ticket", "event", "issued", "age", "wait", "err")
-            if any(name not in fields for name in required) or any(
+            if (tag == "lease_rx" and not ("job" in fields or "epoch" in fields)) or any(name not in fields for name in required) or any(
                     name in fields and not re.fullmatch(r"-?\d+", fields[name]) for name in numeric):
                 capture_errors.append({"file": str(path), "error": "Incomplete/malformed " + tag + " line"})
                 continue
@@ -115,7 +125,10 @@ def analyze(paths):
                     if len(session["completed"]) > 2048:
                         session["completed"].popitem(last=False)
             elif tag == "lease_rx":
-                ack_key = (fields["peer"], fields["job"], fields["seq"])
+                # V4 uses a boot-global sequence within epoch; legacy logs
+                # include the full job instead. Never merge different epochs.
+                scope = ("job", fields["job"]) if "job" in fields else ("epoch", fields["epoch"])
+                ack_key = (fields["peer"], scope, fields["seq"])
                 session["counts"]["lease_rx"] += 1
                 if fields.get("matched") == "1" and fields.get("result") == "OK":
                     session["acks"].setdefault(ack_key, int(fields["age"]))
@@ -149,6 +162,7 @@ def analyze(paths):
                         "counters": dict(session["counts"]), "diagnostic_maxima": session["maxima"],
                         "unresolved_at_capture_end": unresolved})
     return {"kind": "log timing summary; not hardware acceptance", "sessions": reports, "capture_errors": capture_errors,
+            "device_failures": device_failures, "reset_events": reset_events,
             "notes": ["Unresolved at capture boundary is not proof of a missing callback; verify complete capture and trace_lost.",
                       "ACK applied=0 may be staged before StackAccepted; the later proof application has no separate receive line.",
                       "No samples means no evidence. Percentiles do not override per-task authorization deadlines.",

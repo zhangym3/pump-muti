@@ -44,7 +44,7 @@ def partition_table(path):
     return rows
 
 
-def firmware(root, env, chip, nm, evidence_label):
+def firmware(root, env, chip, nm, evidence_label, max_concurrent=None):
     build = json.loads((root / ".mesh-sdk/build.json").read_text(encoding="utf-8"))
     for name, digest in build["inputs"].items():
         require(sha(root / name) == digest, "Source changed since build: " + str(root / name))
@@ -70,6 +70,14 @@ def firmware(root, env, chip, nm, evidence_label):
     commands = json.loads((root / f".pio/compile_commands-{evidence_label}.json").read_text(encoding="utf-8"))
     require(any("PUMP_BUILD_ID=0x" + identity[:8] + "U" in row.get("command", "") for row in commands),
             "Compile command build identity mismatch")
+    if max_concurrent is not None:
+        app_commands = [row.get("command", "") for row in commands
+                        if Path(row["file"]).name == "application.cpp"]
+        require(app_commands, "Missing application compile command")
+        for command in app_commands:
+            defines = re.findall(r"-DPUMP_MAX_CONCURRENT=(\d+)", command)
+            require((defines == [str(max_concurrent)]) if max_concurrent != 1 else
+                    (not defines or defines == ["1"]), "Effective concurrency mismatch")
     dump = (root / f".pio/envdump-{evidence_label}.log").read_text(encoding="utf-8")
     require("[SUCCESS]" in dump, "envdump did not finish")
     app_offset = re.search(r"'ESP32_APP_OFFSET': '(0x[0-9a-fA-F]+)'", dump).group(1)
@@ -102,6 +110,9 @@ def main():
     parser.add_argument("--platformio-home", type=Path, default=Path.home() / ".platformio")
     parser.add_argument("--output", type=Path, required=True, help="New directory, must not exist")
     parser.add_argument("--evidence-label", default="implementation", help="Firmware build/test evidence filename suffix")
+    parser.add_argument("--master-env", choices=("pump_master", "pump_master_five_candidate"), default="pump_master")
+    parser.add_argument("--master-evidence-label", help="Master build/envdump/compiledb suffix; tests use --evidence-label")
+    parser.add_argument("--app-test-log", type=Path, help="Log from the current APP test run")
     parser.add_argument("--report", type=Path, action="append", default=[], help="Additional report to include")
     parser.add_argument("--app-evidence-reference", type=Path, help="Prior candidate whose unchanged APP evidence is reused")
     args = parser.parse_args()
@@ -112,7 +123,11 @@ def main():
     app_apk = reference / "app/app-debug.apk" if reference else app / "app/build/outputs/apk/debug/app-debug.apk"
     app_metadata = reference / "app/output-metadata.json" if reference else app / "app/build/outputs/apk/debug/output-metadata.json"
     label = args.evidence_label
+    master_label = args.master_evidence_label or label
+    app_test_log = args.app_test_log.resolve() if args.app_test_log else app / "implementation-tests.log"
+    candidate_concurrency = 5 if args.master_env == "pump_master_five_candidate" else 1
     require(re.fullmatch(r"[a-z0-9-]+", label), "Invalid evidence label")
+    require(re.fullmatch(r"[a-z0-9-]+", master_label), "Invalid master evidence label")
     for report in args.report:
         require(report.is_file(), "Missing report: " + str(report))
     require(not target.exists() and not target.with_suffix(".zip").exists(), "Output already exists")
@@ -120,27 +135,43 @@ def main():
         require(not target.is_relative_to(root / "src") and target != root, "Invalid output path")
     tools = args.platformio_home / "packages"
     info = {
-        "master": firmware(master, "pump_master", "esp32", tools / "toolchain-xtensa-esp-elf/bin/xtensa-esp32-elf-nm.exe", label),
+        "master": firmware(master, args.master_env, "esp32", tools / "toolchain-xtensa-esp-elf/bin/xtensa-esp32-elf-nm.exe", master_label, candidate_concurrency),
         "slave": firmware(slave, "valve_slave_c3", "esp32c3", tools / "toolchain-riscv32-esp/bin/riscv32-esp-elf-nm.exe", label),
     }
-    approved = (master / "include/mesh_deployment.h").read_text(encoding="utf-8")
-    require("0x" + info["slave"]["build_id"] + "U" in approved, "Slave build is not approved by master")
     board = (master / "include/board_profile.h").read_text(encoding="utf-8")
-    require(re.search(r"MaxConcurrent\s*=\s*1\s*;", board), "Production concurrency must stay 1")
+    require(re.search(r"#define\s+PUMP_MAX_CONCURRENT\s+1\b", board) and
+            re.search(r"MaxConcurrent\s*=\s*PUMP_MAX_CONCURRENT\s*;", board),
+            "Production default concurrency must stay 1")
+    for name in ("protocol.h", "mesh_tx_governor.h", "mesh_tx_diagnostics.h"):
+        require((master / "include" / name).read_bytes() == (slave / "include" / name).read_bytes(),
+                "Master/slave shared header differs: " + name)
+    protocol = (master / "include/protocol.h").read_text(encoding="utf-8")
+    require(re.search(r"ProtocolRevision\s*=\s*4\s*[,;]", protocol) and
+            re.search(r"RequiredFeatures\s*=\s*0x01[Ff][Ff]\s*;", protocol), "Expected V4 capabilities")
+    require(info["master"]["sdk_patch_identity"] == info["slave"]["sdk_patch_identity"], "SDK patch mismatch")
     expectations = {
         master / f".pio/host-{label}.log": ["30 test groups passed", "PASS governor", "PASS simulated 8h/5 nodes"] +
             [f"PASS {n} nodes x 1000 batches" for n in (1, 2, 5)],
         master / f".pio/sdk-{label}.log": ["PASS SDK host harness and complete component pinning"],
-        master / f".pio/log-tools-{label}.log": ["Ran 7 tests", "OK"],
+        master / f".pio/log-tools-{label}.log": ["OK"],
         slave / f".pio/host-{label}.log": ["slave flow tests passed"],
-        app / "implementation-tests.log": ["BUILD SUCCESSFUL"],
+        app_test_log: ["BUILD SUCCESSFUL"],
     }
+    if label == "v4":
+        expectations[master / ".pio/host-v4.log"] += ["PASS V4 early StartOK/rejection", "1000 randomized five-node batches"]
+        expectations[master / ".pio/architecture-v4.log"] = ["PASS"]
+        expectations[master / ".pio/v3-field-replay.log"] = ["PASS archived V3 replay:"]
+        expectations[slave / ".pio/host-v4.log"] += ["PASS prepared 19999/20000ms boundary"]
     if label == "offline-fix":
         expectations[master / f".pio/host-{label}.log"] += ["PASS recovery:", "PASS integrated fault recovery:"]
         expectations[slave / f".pio/host-{label}.log"] += ["PASS transport fault locks"]
     for path, markers in expectations.items():
         log = path.read_text(encoding="utf-8")
         require(all(marker in log for marker in markers), "Missing test evidence: " + str(path))
+    log_tools = (master / f".pio/log-tools-{label}.log").read_text(encoding="utf-8")
+    count = re.search(r"^Ran (\d+) tests? in ", log_tools, re.M)
+    require(count and int(count.group(1)) >= 7 and re.search(r"^OK\s*$", log_tools, re.M)
+            and not re.search(r"^FAILED\b", log_tools, re.M), "Log tool regressions did not pass")
     xml_files = sorted((app / "app/build/test-results/testDebugUnitTest").glob("TEST-*.xml"))
     tests = failures = errors = skipped = 0
     for path in xml_files:
@@ -162,7 +193,7 @@ def main():
         previous = {p.relative_to(reference / "source/app").as_posix(): sha(p)
                     for p in (reference / "source/app").rglob("*") if p.is_file()}
         require(current == previous and current, "Reused APP sources/configuration changed")
-        require(sha(app / "implementation-tests.log") == sha(reference / "app/build-tests.log"), "Reused APP test log changed")
+        require(sha(app_test_log) == sha(reference / "app/build-tests.log"), "Reused APP test log changed")
         require({p.name: sha(p) for p in xml_files} ==
                 {p.name: sha(p) for p in (reference / "app/test-results").glob("TEST-*.xml")}, "Reused APP test XML changed")
         info["app"]["evidence"] = {"reused": True, "reference": reference.name,
@@ -177,31 +208,41 @@ def main():
 
     for role, root in (("master", master), ("slave", slave)):
         folder = root / ".pio/build" / info[role]["environment"]
+        build_label = master_label if role == "master" else label
         for name in ("firmware.bin", "firmware.elf", "bootloader.bin", "partitions.bin"):
             copy(folder / name, role + "/" + name)
         for source, name in ((root / ".mesh-sdk/build.json", "build.json"),
                              (root / ".mesh-sdk/manifest.json", "sdk-manifest.json"),
                              (root / ("sdkconfig." + info[role]["environment"]), "sdkconfig.effective"),
                              (folder / "config/sdkconfig.json", "sdkconfig.json"),
-                             (root / f".pio/compile_commands-{label}.json", "compile_commands.json"),
-                             (root / f".pio/envdump-{label}.log", "envdump.log"),
-                             (root / f".pio/build-{label}.log", "build.log"),
+                             (root / f".pio/compile_commands-{build_label}.json", "compile_commands.json"),
+                             (root / f".pio/envdump-{build_label}.log", "envdump.log"),
+                             (root / f".pio/build-{build_label}.log", "build.log"),
                              (root / f".pio/host-{label}.log", "host-tests.log")):
             copy(source, role + "/" + name)
     for name in ("sdk", "log-tools"):
         copy(master / (".pio/" + name + "-" + label + ".log"), "evidence/" + name + "-tests.log")
     copy(master / ".pio/sdk-tests/extracted.json", "evidence/sdk-extracted.json")
-    copy(app / "implementation-tests.log", "app/build-tests.log")
+    copy(app_test_log, "app/build-tests.log")
+    if label == "v4":
+        copy(master / ".pio/architecture-v4.log", "evidence/architecture-tests.log")
+        copy(master / ".pio/v3-field-replay.log", "evidence/v3-field-replay.log")
+        copy(master / ".pio/diagnostics/v3-field-replay.cpp", "evidence/v3-field-replay.cpp")
+        baseline = master / ".pio/diagnostics/v4-implementation-baseline/pump-muti"
+        for path in sorted(baseline.rglob("*")):
+            if path.is_file() and path.relative_to(baseline).parts[0] in ("include", "src", "test"):
+                copy(path, "evidence/v3-baseline/" + path.relative_to(baseline).as_posix())
     copy(app_apk, "app/app-debug.apk")
     copy(app_metadata, "app/output-metadata.json")
     for path in xml_files:
         copy(path, "app/test-results/" + path.name)
-    for path in (master / "docs").glob("MESH_*ACCEPTANCE*20261019.*"):
-        copy(path, "docs/" + path.name)
-    for path in (master / "docs").glob("MESH_FIELD_*20261019.*"):
-        copy(path, "docs/" + path.name)
-    for name in ("MESH_FIVE_CHANNEL_IMPLEMENTATION_PLAN_20261019.md",):
-        copy(master / "docs" / name, "docs/" + name)
+    if label != "v4":
+        for path in (master / "docs").glob("MESH_*ACCEPTANCE*20261019.*"):
+            copy(path, "docs/" + path.name)
+        for path in (master / "docs").glob("MESH_FIELD_*20261019.*"):
+            copy(path, "docs/" + path.name)
+        for name in ("MESH_FIVE_CHANNEL_IMPLEMENTATION_PLAN_20261019.md",):
+            copy(master / "docs" / name, "docs/" + name)
     for report in args.report:
         copy(report, "docs/" + report.name)
     for role, root in (("master", master), ("slave", slave), ("app", app)):
@@ -221,12 +262,17 @@ def main():
     record = {
         "kind": "software_candidate_not_hardware_accepted",
         "created_utc": datetime.now(timezone.utc).isoformat(), "production_max_concurrent": 1,
-        "devices_opened": False, "firmware_uploaded": False, "pump_started": False,
+        "candidate_max_concurrent": candidate_concurrency, "available_slave_devices": 1,
+        "protocol_revision": 4, "required_features": "0x01ff",
+        "packaging_opens_devices": False, "packaging_uploads_firmware": False, "packaging_starts_pump": False,
         "software_evidence": "PASS; see test logs and acceptance report",
-        "firmware_evidence_label": label,
+        "firmware_evidence_label": label, "master_evidence_label": master_label,
         "current_reports": [p.name for p in args.report],
-        "pending": ["device SDK callback/fault matrix", "1/2/5-node RF", "1/2/5-node 20 batches each of 500mL",
-                    "8-hour wall-clock bench", "agreed physical-volume tolerance", "runtime heap/stack peaks"],
+        "pending": ["complete V4 multi-device callback/fault and seg=0 traces", "1 lane >=50 batches rotating 5 devices",
+                    "2 lanes >=50 overlapping batches", "5 lanes >=200 batches, 100/200/500mL",
+                    "5 lanes >=8h wall-clock water/RF bench", "each fault class >=10 per rotating device",
+                    "agreed physical-volume tolerance and weighed volumes", "water-task control tick <=50ms on latest firmware",
+                    "phone BLE business/reconnect and three-end result agreement", "runtime heap/stack trends"],
         "builds": info,
         "identity_scope": "build_id indexes source/default configuration inputs; full ELF/bin and effective config hashes identify this artifact",
         "flash_note": "Use flash_files here. IDF native flash_args/flasher_args.json are NOT the PlatformIO upload layout.",
@@ -235,13 +281,14 @@ def main():
     (target / "candidate.json").write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     text = """Mesh 软件候选包（硬件未验收）
 
-主机生产并发保持 1；本包没有刷写设备或启泵。先阅读 docs/ 下实施报告和现场验收步骤。
+主机生产默认并发保持 1；台架五路候选环境支持并发 5，实际包配置见 candidate.json 的 candidate_max_concurrent。
+本打包工具不刷写设备或启泵。先阅读 docs/ 下实施报告和现场验收步骤；仅 1 台从机，五路尚未实机验收。
 master/firmware.bin 与 slave/firmware.bin 均位于 0x20000。
 主机 bootloader.bin 位于 0x1000，从机位于 0x0；两端 partitions.bin 均位于 0x8000。
 精确芯片/地址/SHA256 见 candidate.json，SHA256SUMS 覆盖包内文件。
-不要使用 IDF 辅助 flash_args 中的 0x10000；不要直接使用主机默认 COM3。
+不要使用 IDF 辅助 flash_args 中的 0x10000；当前端口配置为主 COM5、从 COM6，刷写前核对身份。
 APK 为 debug 候选构建，未安装到手机、未验收真机重连/重启 UI。
-source/ 为三仓当前构建相关源码快照，未包含 Git 历史或全局 SDK；SDK 补丁和1893文件清单在包内。
+source/ 为三仓当前构建相关源码快照，未包含 Git 历史或全局 SDK；SDK 补丁和完整组件文件清单在包内。
 source/master、source/slave 对应原 pump-muti、pump-muti-slave；运行跨仓host测试时恢复这两个相邻目录名。
 主机 NVS 已升级 format 3，回退前必须制定状态迁移/恢复步骤，不能盲目清空 fence。
 """

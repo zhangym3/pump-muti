@@ -2,14 +2,13 @@
 #include "valve_status.h"
 #include "pump_safety_controller.h"
 #include "mesh_tx_governor.h"
-#include "mesh_deployment.h"
 namespace pump {
 struct RegisteredNode { uint16_t address = 0; uint32_t k = 5880, version = 1; };
 struct NodeRuntime {
   struct LeaseRecord {
     uint32_t sequence = 0, issuedAt = 0;
     bool accepted = false, acked = false, early = false; Reply result = Reply::Unknown;
-  } leases[3];
+  } leases[10];
   RegisteredNode config;
   ValveStatus status;
   uint32_t seenAt = 0;
@@ -21,6 +20,9 @@ struct NodeRuntime {
   uint16_t capabilityRevision = 0, capabilityFeatures = 0;
   uint8_t attempts = 0, leaseCursor = 0;
   bool commandPending = false, leasePending = false, commandSent = false, leaseSent = false;
+  uint32_t firstStartIssuedAt = 0, startAckAt = 0, nextLeaseAt = 0;
+  bool startIssued = false, startAckSeen = false, commandCommitted = false, commandAccepted = false;
+  bool commandEarly = false; Reply commandResult = Reply::Unknown;
   bool capable = false;
 };
 enum class SchedulePhase : uint8_t { Idle, Preparing, Opening, Supplying, Draining, Between, Complete, Failed };
@@ -30,6 +32,9 @@ class MeshSender {
   virtual bool send(const Packet &p) = 0;
   virtual bool takeSubmission(MeshSubmission &out) = 0;
   virtual void fence(JobKey key) = 0;
+  virtual bool beginLeaseScope(JobKey key, uint32_t &floor) = 0;
+  virtual MeshTxGovernor::Admission prepare(const Packet &p) = 0;
+  virtual void retire(uint16_t peer, JobKey key, Op op) = 0;
   virtual bool healthy() const = 0;
 };
 struct JobReport {
@@ -52,6 +57,8 @@ class MasterScheduler {
   void hello(uint16_t source, uint32_t k, uint32_t version, bool commissioned, uint32_t now,
              uint32_t buildId = 0);
   void status(uint16_t source, const ValveStatus &s, uint32_t now);
+  bool compactLeaseAck(uint16_t source, uint32_t epoch, uint32_t sequence, Reply result, uint32_t now);
+  bool targetClosed(uint16_t source, JobKey key, uint32_t now);
   bool leaseAck(uint16_t source, JobKey key, uint32_t sequence, Reply result, uint32_t now);
   bool commandReply(uint16_t source, JobKey key, Op command, Reply result, uint32_t now);
   bool result(uint16_t source, const ValveStatus &s, uint32_t now);
@@ -63,11 +70,15 @@ class MasterScheduler {
   const NodeRuntime &node(size_t i) const { return nodes_[i]; }
   JobReport report() const { return report_; }
   Reason stopReason() const { return stopReason_; }
+  const char *guard() const { return guard_; }
+  uint32_t closedMask() const { return closed_; }
+  uint32_t finalMask() const { return final_; }
   VolumeReport volume() const;
  private:
   void batch(uint32_t now);
   void closeBatch(Reason reason);
-  bool sendNode(size_t i, Op op);
+  MeshTxGovernor::Admission sendNode(size_t i, Op op);
+  uint32_t leasePhase(size_t slot) const;
   void leases(uint32_t now);
   MeshSender &net_;
   PumpSafetyController &pump_;
@@ -84,6 +95,8 @@ class MasterScheduler {
   Reason stopReason_ = Reason::None;
   uint32_t capNonce_ = 0, bootstrapAt_ = 0;
   bool preflight_ = false, bootstrap_ = false;
+  uint32_t leaseFloor_ = 0; size_t commandCursor_ = 0;
+  const char *guard_ = "NONE";
 };
 constexpr uint32_t LeaseAckTimeoutMs = 8000;
 }

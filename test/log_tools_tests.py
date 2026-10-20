@@ -67,6 +67,34 @@ class LogTests(unittest.TestCase):
         self.assertEqual(len(result["capture_errors"]), 2)
         self.assertEqual(result["sessions"], [])
 
+    def test_v4_epoch_acks_and_repeated_sequence_after_epoch_change(self):
+        def ack(epoch, age):
+            return f"I (100) lease_rx: t=100 peer=0002 epoch={epoch} seq=1 result=OK matched=1 issued=10 age={age} applied=1\n"
+        result = self.summarize(ack(144, 46) * 2 + ack(145, 72))
+        self.assertEqual(result["capture_errors"], [])
+        session = result["sessions"][0]
+        self.assertEqual(session["matched_ok_lease_ack_ms"]["count"], 2)
+        self.assertEqual(session["directly_applied_ok_lease_ack_ms"]["max"], 72)
+        self.assertEqual(session["counters"]["lease_rx"], 3)
+
+    def test_missing_ack_scope_and_serial_capture_error_are_reported(self):
+        text = "I (100) lease_rx: t=100 peer=0002 seq=1 result=OK matched=1 age=20 applied=1\n"
+        text += json.dumps({"kind": "error", "port": "COM5", "text": "device disconnected"})
+        result = self.summarize(text)
+        self.assertEqual(len(result["capture_errors"]), 2)
+        self.assertEqual(result["sessions"], [])
+
+    def test_stack_overflow_before_build_and_reset_are_retained(self):
+        text = "***ERROR*** A stack overflow in task BTC_TASK has been detected.\n"
+        text += "rst:0xc (SW_CPU_RESET),boot:0x13\nI (1) build: id=12345678 protocol=4\n"
+        text += tx(10, 1, 0, segmented=0) + tx(20, 1, 1, segmented=0)
+        result = self.summarize(text)
+        self.assertEqual(len(result["device_failures"]), 1)
+        self.assertIn("BTC_TASK", result["device_failures"][0]["line"])
+        self.assertEqual(len(result["reset_events"]), 1)
+        self.assertEqual(result["capture_errors"], [])
+        self.assertEqual(result["sessions"][0]["unresolved_at_capture_end"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

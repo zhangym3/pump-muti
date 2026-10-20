@@ -11,6 +11,7 @@ class ControlGateway {
   bool submit(const char *text, size_t length, bool bluetooth);
   bool publish(const char *text);
   void ioWorker();
+  uint32_t bluetoothStackMinimumBytes() const;
   bool overflow() { return overflow_.exchange(false); }
  private:
   QueueHandle_t commands_ = nullptr, output_ = nullptr;

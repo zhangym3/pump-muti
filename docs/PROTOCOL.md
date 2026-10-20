@@ -1,14 +1,16 @@
-# 协议 V3
+# 协议 V4
 
 Bluetooth Mesh Vendor CID `0x02E5`、Model ID `0x0001`，群组 `0xC001`。固定使用 NetKey index 0 / AppKey index 0。所有多字节字段显式小端，禁止直接发送 C++ 内存结构。
+
+当前 Mesh 能力为 `revision=4, features=0x01FF`。V3/V4 主从不可混装；手机请求与最终结果格式保持兼容。实现与验收状态见 [五路修复实施及验收台账](FIVE_CHANNEL_IMPLEMENTATION_ACCEPTANCE_20261020.md)。
 
 `JobKey` = `epoch:u32 + id:u32`，两者都非零。epoch 在主节点每次启动时持久化递增；id 在请求正式接受前递增并保存。节点地址来自 Mesh 上下文，不在业务载荷内重复声明。
 
 | Op | 方向 | 载荷，按顺序 | 字节 |
 | --- | --- | --- | --- |
-| C0 PREPARE | 主→从，单播 | key, ml:u32, targetPulses:u32, k:u32, version:u32, maxMs:u32, speedFactorPermille:u16, leaseMs:u32, flags:u8 | 35 |
+| C0 PREPARE | 主→从，单播 | key, ml:u32, targetPulses:u32, k:u32, version:u32, maxMs:u32, speedFactorPermille:u16, leaseMs:u32, flags:u8, leaseFloor:u32 | 39 |
 | C1 START | 主→从，单播 | key | 8 |
-| C2 LEASE | 主→从，单播 | key, sequence:u32 | 12 |
+| C2 LEASE | 主→从，单播 | epoch:u32, sequence:u32 | 8 |
 | C3 CLOSE | 主→从，单播 | key, reason:u8 | 9 |
 | C4 RESULT_QUERY | 主→从，单播 | key，零值表示查询最近已保存结果 | 8 |
 | C5 RESULT | 从→主，单播 | key, pulses:u32, closePulses:u32, k:u32, revision:u32, phase:u8, reason:u8, flags:u8 | 27 |
@@ -21,10 +23,15 @@ Bluetooth Mesh Vendor CID `0x02E5`、Model ID `0x0001`，群组 `0xC001`。固�
 | CB HELLO_REPLY | 主→从 | epoch:u32, pumpFault:u8, schedulePhase:u8 | 6 |
 | CC COMMISSION | 主→从，单播 | request:u32 | 4 |
 | CD COMMISSION_REPLY | 从→主，单播 | request:u32, reply:u8, commissioned:u8, k:u32, version:u32 | 14 |
-| CE LEASE_ACK | 从→主，单播 | key, sequence:u32, reply:u8 | 13 |
-| CF COMMAND_ACK | 从→主，单播 | key, command:u8, reply:u8 | 10 |
+| CE LEASE_ACK OK | 从→主，单播 | epoch:u32, sequence:u32；长度 8 表示 OK | 8 |
+| CE LEASE_ACK 拒绝 | 从→主，单播 | epoch:u32, sequence:u32, reply:u8（非 OK 的有效枚举） | 9 |
+| CF COMMAND_ACK 拒绝 | 从→主，单播 | key, command:u8（C0/C1）, reply:u8（仅非 OK） | 10 |
 | D0 CAPABILITIES_GET | 主→从，单播 | nonce:u32 | 4 |
 | D1 CAPABILITIES | 从→主，单播 | nonce:u32, revision:u16, features:u16, buildId:u32 | 12 |
+| D2 TARGET_CLOSED | 从→主，单播 | key，仅证明 Target 输出关阀 | 8 |
+| D3 TARGET_CLOSED_ACK | 主→从，单播 | key，独立于最终结果确认 | 8 |
+| D4 PREPARE_OK | 从→主，单播 | key，opcode 表示 Prepare 成功 | 8 |
+| D5 START_OK | 从→主，单播 | key，opcode 表示 Start 成功 | 8 |
 
 业务载荷之外还有 opcode、MIC 和 Mesh 层开销；业务载荷超过 8 字节时由当前传输层按分段报文处理。配置提供 16 个 RX 分段上下文、8 个 TX 上下文；它们不构成 32 节点吞吐保证。C6 不再发送任何周期流量摘要。
 
@@ -40,13 +47,37 @@ Bluetooth Mesh Vendor CID `0x02E5`、Model ID `0x0001`，群组 `0xC001`。固�
 
 能力缓存有效时不逐批探测；节点离线、build ID 变化或主机重启后需重新单播 CAPABILITIES_GET。能力探测必须在 PREPARE/START 前完成。从机每 10 秒发送一次 HELLO 在线心跳，主机回复 HELLO_REPLY；离线恢复或主机有未决结果时可触发按需 RESULT_QUERY。HELLO 不包含流量遥测。
 
-PREPARE / START 按未确认节点轮询，准备阶段和打开阶段上限分别为 10s / 4s。生产 `MaxConcurrent=1`；增加并发前必须重新验证阶段时限和无线负载。开始供水前，主机等待每个已启动节点的新鲜 LEASE_ACK，之后按单播地址续租；从机只接受同任务的更新序号，重复序号可确认但不延长租期，过期租约不能被迟到报文复活。PREPARE 中的 `leaseMs` 默认 12000 ms，单调时钟到期或达到 `maxMs` 都会使从机本地关阀。
+主机按协议版本和必要功能位判断兼容性，不再按 build ID 白名单限制启动或打包。build ID 保留为非零的固件追踪标识，用于日志和能力缓存失效判断；同次探测的 CAPABILITIES 与近期 HELLO 的 build ID 必须一致。来源、nonce、在线时效和配网标定检查继续生效。build ID 本身变化不会导致兼容拒绝；V4 的兼容性由 revision 与 features 决定。
 
-停止先本地断泵，再向本批未完成节点单播 CLOSE；取消期间每 700ms 重发关闭，未取得终态则每 300ms 补查一个节点，最多等待 10s。终态缺失标记 UNKNOWN，不自动重新出水。
+能力探测和 PREPARE 各有固定 15s 期限；从机未开阀的 Prepared 窗口为 20s，重复 Prepare 不延长期限。Prepare 使用滚动准入：普通分段最多一条在途，额外待发 Prepare 至多一条；首发先于重试，按未确认节点公平轮询。Busy 不计实际提交次数，实际提交后 1500ms 才能重试，每命令最多提交 3 次。
+
+Opening 阶段在尚无 Start 实际提交时最多等 1000ms；首条 Start 实际提交后启动固定 4000ms 预算，重试不滑动。所有未关闭节点都须具有 Start 实际提交、SDK accepted、D5 和匹配实际签发记录的 CE；Lease 签发不得早于本路 D5 被接受，启泵时证明年龄必须 <2000ms。早到的业务 ACK 可暂存，SDK accepted 后才应用；SDK 拒绝不能被业务 ACK 覆盖。普通状态报告不能代替命令成功证明。
+
+运行时每路实际 Lease 提交至少间隔 1000ms，按本批选中节点顺序使用 0/200/400/600/800ms 相位，稀疏注册槽位同样错开；错过周期不追赶突发。主机每路保存 10 条签发记录，运行证明期限 8000ms，等于期限立即保护停泵。时间基于实际签发，不能按 ACK 接收时刻虚增租约。从机 `leaseMs` 默认 12000ms；无流启动等待 5000ms、已有脉冲后无流 1500ms、静默 500ms、尾流结算上限 3000ms 均保持原值。
+
+停止先本地断泵，再向本批未完成节点单播 CLOSE；取消期间每 700ms 重发关闭。Draining 最初 3500ms 等待主动最终结果，之后全局每 1000ms 只补查一个缺失节点，总收尾期限 10000ms。终态缺失标记 UNKNOWN，不自动重新出水。
+
+Target 本地关输出后立即发 D2，后续每 `250+(slot%5)*10` ms 重试，最多 6 次，D3 或最终 C7 停止重试。主机校验来源、完整 key、本批及该路 Start 已实际提交；只锁存本路 closed 并清理该路待发 Start/Lease，不设置 final、成功或水量。最后一路关闭证明到达即停泵；一路先完成不影响其他路。机械阀位置没有传感器反馈，D2 只证明输出命令关闭。D2 全丢且结果也未到时，保护上界仍是最后有效 Lease 签发后 8000ms 加控制循环余量。
 
 从节点终态 RESULT 最多尝试 6 次，按地址错开发送；未确认的已保存终态可在后续 HELLO/恢复查询时重新上报。正常运行期间不发送 SUMMARY 或 STATUS。CLOSE、LEASE、RESULT、ACK 和停止请求使用高优先级关键队列；关键队列溢出或分段发送异常会触发本地安全停止。
 
 已配网节点重启直接恢复 Mesh 配置，不重新启用待配网过程。固定主地址检查、AppKey 绑定和注册表共同限制业务来源。全部节点均为受信任设备；本协议不防御已掌握网络密钥且运行恶意固件的内部节点伪造主地址。
+
+## 租约作用域与紧凑报文隔离
+
+新任务在与 worker 提交共用的传输锁内调用 `beginLeaseScope`：清理旧任务未提交授权、切换完整 JobKey，并取得全局最后分配序号 +1 作为非零 `leaseFloor`。所有 Prepare 带同一下界；重复 Prepare 改下界返回 Conflict。序号在实际提交时全局严格递增，所有节点和后续任务共用；UINT32_MAX 后拒绝继续分配，不回绕。已提交 SDK ticket 保留至真实回调。
+
+从机只在当前开阀状态、epoch 匹配且 sequence≥floor 时接受新租约。首次 sequence 大于 2³¹ 合法，后续须严格增大；重复序号仅确认、不续期，旧序号与过期租约不能复活输出。主机按来源、epoch、sequence 查实际签发账本恢复完整 key；迟到的旧任务 ACK 无法成为新任务证明。重启先持久化新 epoch；从机重启关输出，不恢复开阀。
+
+`Packet.context` 只保存本地完整 JobKey，不上无线、不落 NVS。C2/CE 序号位于 offset4。严格拒绝旧 C0=35、C2=12、CE=13、CF=OK，不能按前缀接收。D4/D5 只合并完全相同的在途成功副本；真实结束后仍能回复重试。合法 Start 清理待发 D4，合法 Lease 清理待发 D5；同命令拒绝清除待发旧 OK，不能撤回已在途消息。
+
+## 资源限制、诊断与部署
+
+主 SAR limit=2、从 SAR limit=1，普通分段在途最多 1；Pending=64、Reserved=16、Tickets=8，不扩大 SDK SAR 上下文。正常 C1/C2/CE(OK)/D2/D3/D4/D5 业务长度均 8，当前短 MIC 下应为非分段；必须用设备 `mesh_tx seg=0` 另行验证。SDK 调用在锁外，缺失真实完成回调不能伪释放 ticket；故障恢复仅允许诊断，不恢复业务授权。
+
+每 10s 输出有界 `mesh_diag`、`MESH_STATE`、`runtime_mem`。`heap_free/heap_min/largest_free` 及 `app_stack_min_bytes/mesh_stack_min_bytes` 是字节，后两者为 ESP-IDF 任务栈历史最小剩余量；不能用静态 RAM 使用率代替运行趋势。`start_guard` 和 `start_proof` 在阶段/拒绝原因变化时记录实际签发、StartAck、证明年龄以及 closed/final。跨设备 uptime 不可直接相减。
+
+生产默认环境 `pump_master` 的 `PUMP_MAX_CONCURRENT=1`；`pump_master_five_candidate` 显式设置为 5，供台架验证。只有第 9.2 节五台实机和水量/长时间运行门槛通过后才提升生产默认值。本轮 V4 不新增持久化结构迁移；主机现有格式为 3，历史格式 1/2 的说明应结合迁移代码解释。保留配网/标定与 NVS，回退不能恢复会复用 epoch 的旧 NVS 快照。
 
 ## 客户端请求身份
 
@@ -70,7 +101,7 @@ start-each CLIENT_HEX SEQ EPOCH MASK_HEX MAX_MS AMOUNTS_64HEX
 
 `AMOUNTS_64HEX` 按槽位 1～32 各占两位十六进制；选中槽位为 `01`～`28`，表示 50～2000 mL，单位 50 mL；未选槽位必须 `00`。例如 mask=80000001、1 号 300mL、32 号 2000mL，计划为 `06` + 30 个 `00` + `28`。无论选多少路，整条命令不超过 144 字节。`MAX_MS` 是从设置页取得的全局单路时限，范围 1～240000ms。
 
-主机将整个计划作为一个任务先持久化，再按编号顺序逐路 PREPARE；每路独立计算目标脉冲，沿用原从机 PREPARE 布局。手机断连不影响已接受任务，重试必须保留完整计划和原身份/序号；同序号任意一路目标改变返回 CONFLICT。统一设置仍使用原 `start` 和 37 字节 REQUEST。新建任务的 APP 水量上限为 2000mL，旧已接受任务/历史记录和真实累计流量不截断。
+主机将整个计划作为一个任务先持久化，再按编号分批 PREPARE（批并发由主机环境配置决定）；每路独立计算目标脉冲，主从使用上述 V4 PREPARE 布局。手机断连不影响已接受任务，重试必须保留完整计划和原身份/序号；同序号任意一路目标改变返回 CONFLICT。统一设置仍使用原 `start` 和 37 字节 REQUEST。新建任务的 APP 水量上限为 2000mL，旧已接受任务/历史记录和真实累计流量不截断。
 
 主机 NVS 格式升级为 2：保留原格式 1 的完整字段布局并增加 16 个客户端的逐路计划。启动可原位读取旧记录，保留 PIN、登记表、客户端高水位、任务及结果，再写入格式 2；禁止擦除 NVS。降级到只支持格式 1 的固件会拒绝读取格式 2，应使用升级前备份安排维护。独立试泵仍共用原客户端记录，无需改变从机执行协议。
 

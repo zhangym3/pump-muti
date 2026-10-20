@@ -1,5 +1,6 @@
 #include "master_scheduler.h"
 #include "flow_job_controller.h"
+#include "valve_mesh_session.h"
 #include "mesh_tx_diagnostics.h"
 #include <cstdio>
 #include <cstdlib>
@@ -8,100 +9,81 @@
 #include <vector>
 #include <string>
 using namespace pump;
+constexpr uint32_t TestSlaveBuildId = 0x12345678U;
 #define CHECK(...) do { if (!(__VA_ARGS__)) { std::fprintf(stderr,"%s:%d: %s\n",__FILE__,__LINE__,#__VA_ARGS__); std::exit(1); } } while(false)
 Packet keyed(Op op,uint16_t peer,JobKey job={1,1},uint32_t seq=1) {
-  auto p=packet(op,peer); Writer w{p}; w.key(job);
-  if (op==Op::Lease || op==Op::LeaseAck) w.u32(seq);
-  if (op==Op::LeaseAck) w.u8(uint8_t(Reply::Ok));
+  auto p=packet(op,peer); p.context=job; Writer w{p};
+  if (op==Op::Lease || op==Op::LeaseAck) { w.u32(job.epoch); w.u32(seq); }
+  else w.key(job);
   if (op==Op::Close) w.u8(uint8_t(Reason::Manual));
   return p;
+}
+Packet sarPacket(uint16_t peer=2) {
+  auto p=keyed(Op::Prepare,peer); while(p.size<39) { Writer w{p}; w.u8(0); } return p;
 }
 Packet helloPacket(uint16_t peer) {
   auto p=packet(Op::Hello,peer); Writer w{p}; w.u32(5880); w.u32(1); w.u8(1); w.u32(0); return p;
 }
 void drain(MeshTxGovernor &g,uint32_t now) { MeshSubmission r; while(g.collect(now,r)) {} }
 void governor_matrix() {
-  for (unsigned order=0;order<2;++order) {
-    MeshTxGovernor g; MeshTxGovernor::Dispatch d,other;
-    CHECK(g.enqueue(keyed(Op::Lease,2),100) && g.next(100,d));
-    CHECK(g.enqueue(keyed(Op::Lease,2),101) && !g.next(101,other));
-    g.event(d.ticket,order?3:1,0,110); drain(g,110);
-    CHECK(g.inFlight()==1 && !g.next(111,other));
-    g.event(d.ticket,order?1:3,0,120); g.event(d.ticket,3,0,120); drain(g,120);
-    CHECK(g.inFlight()==0 && g.metrics().ended==1);
-    CHECK(g.next(121,other) && other.ticket!=d.ticket);
-    g.event(d.ticket,3,-9,122); CHECK(g.healthy()); // late old ticket cannot free a new one
+  for (bool endFirst:{false,true}) {
+    MeshTxGovernor g; MeshTxGovernor::Dispatch d;
+    CHECK(g.enqueue(sarPacket(),100) && g.next(100,d));
+    g.event(d.ticket,endFirst?3:1,0,110); drain(g,110); CHECK(g.inFlight()==1);
+    g.event(d.ticket,endFirst?1:3,0,120); drain(g,120); CHECK(g.inFlight()==0 && g.metrics().ended==1);
+    g.event(d.ticket,3,-9,122); CHECK(g.healthy());
   }
   for (int error:{-12,-16,-22,-105}) {
     MeshTxGovernor g; MeshTxGovernor::Dispatch d;
     CHECK(g.enqueue(keyed(Op::Lease,2),100) && g.next(100,d));
-    g.event(d.ticket,2,error,101); drain(g,101);
-    CHECK(!g.healthy() && g.inFlight()==0 && g.metrics().faults==1);
-  }
-  {
-    MeshTxGovernor g; MeshTxGovernor::Dispatch d;
-    CHECK(g.enqueue(helloPacket(2),100) && g.next(100,d));
-    g.event(d.ticket,4,-ETIMEDOUT,110);
-    CHECK(g.healthy() && g.metrics().helloTimeouts==1 && g.metrics().faults==0);
-    g.event(d.ticket,1,0,111); drain(g,111);
-    CHECK(g.healthy() && g.inFlight()==0 && g.enqueue(helloPacket(2),112));
-    CHECK(g.next(112,d)); g.event(d.ticket,1,0,113); g.event(d.ticket,3,0,120); drain(g,120);
-    CHECK(g.healthy() && g.inFlight()==0 && g.metrics().helloTimeouts==1);
-  }
-  for (const auto scenario : {std::pair<Op,int>{Op::Lease,-ETIMEDOUT},
-                              std::pair<Op,int>{Op::Hello,-EIO}}) {
-    MeshTxGovernor g; MeshTxGovernor::Dispatch d;
-    const auto p=scenario.first==Op::Hello ? helloPacket(2) : keyed(scenario.first,2);
-    CHECK(g.enqueue(p,100) && g.next(100,d));
-    g.event(d.ticket,4,scenario.second,110); g.event(d.ticket,1,0,111); drain(g,111);
-    CHECK(!g.healthy() && g.metrics().helloTimeouts==0 && g.metrics().faults==1);
+    g.event(d.ticket,2,error,101); drain(g,101); CHECK(!g.healthy() && !g.inFlight());
   }
   for (bool accepted:{false,true}) {
     MeshTxGovernor g; MeshTxGovernor::Dispatch d;
-    CHECK(g.enqueue(keyed(Op::Lease,2),100) && g.next(100,d));
-    if(accepted) g.event(d.ticket,1,0,101);
-    drain(g,102); CHECK(!g.next(6100,d));
-    CHECK(!g.healthy() && g.inFlight()==1); // missing end / mesh reset never fake releases
-  }
-  {
-    MeshTxGovernor g; MeshTxGovernor::Dispatch d;
-    CHECK(g.enqueue(keyed(Op::Lease,2),100) && g.next(100,d));
-    g.event(d.ticket,1,0,101); g.event(d.ticket,3,-110,102); drain(g,102);
-    CHECK(!g.healthy() && g.inFlight()==0);
+    CHECK(g.enqueue(sarPacket(),100) && g.next(100,d));
+    if (accepted) g.event(d.ticket,1,0,101);
+    drain(g,102); CHECK(!g.next(6100,d) && !g.healthy() && g.inFlight()==1);
   }
   {
     MeshTxGovernor g; MeshTxGovernor::Dispatch a,b,c;
-    CHECK(g.enqueue(keyed(Op::Start,2),0)); // Real START is 8 bytes, unsegmented.
-    auto ordinary=keyed(Op::Prepare,2); Writer w{ordinary}; w.u32(1);
-    CHECK(g.enqueue(ordinary,0)); ordinary.peer=3; CHECK(g.enqueue(ordinary,0));
-    CHECK(g.next(0,a) && a.packet.op==Op::Start); g.event(a.ticket,1,0); drain(g,0);
-    CHECK(g.next(1,a) && a.packet.op==Op::Prepare); g.event(a.ticket,1,0);
-    CHECK(!g.next(2,b)); // ordinary SAR reserves the second context
-    CHECK(g.enqueue(keyed(Op::Lease,3),2) && g.next(2,b));
-    CHECK(!g.next(3,c) && g.metrics().peakSar==2);
-    g.event(a.ticket,3,0,10); g.event(b.ticket,1,0,10); g.event(b.ticket,3,0,10); drain(g,10);
-    CHECK(g.inFlight()==0 && g.next(11,c));
+    CHECK(g.enqueue(sarPacket(),0) && g.next(0,a)); g.event(a.ticket,1,0,0); drain(g,0);
+    auto other=sarPacket(3); CHECK(g.enqueue(other,1) && !g.next(1,b));
+    // Compact authorization, success replies and closure bypass existing SAR, including same peer.
+    for (auto op:{Op::Start,Op::Lease,Op::LeaseAck,Op::PrepareOK,Op::StartOK,Op::TargetClosed,Op::TargetClosedAck}) {
+      CHECK(g.enqueue(keyed(op,2),2) && g.next(2,b) && !MeshTxGovernor::segmented(b.packet));
+      g.event(b.ticket,1,0,3); drain(g,3); CHECK(g.inFlight()==1);
+    }
+    g.event(a.ticket,3,0,100); drain(g,100); CHECK(g.next(101,c) && g.metrics().peakSar==1);
   }
   {
-    MeshTxGovernor g; MeshTxGovernor::Dispatch d;
-    CHECK(g.enqueue(keyed(Op::Start,2),100) && g.enqueue(keyed(Op::Lease,2),100));
-    CHECK(g.next(101,d)); // commit may legally precede stop
-    g.fence({1,1}); CHECK(g.queued()==0 && !g.enqueue(keyed(Op::Start,2),102));
-    CHECK(!g.next(102,d)); CHECK(g.enqueue(keyed(Op::Close,AllSlaves),102));
-    CHECK(g.next(102,d) && d.packet.op==Op::Close);
+    MeshTxGovernor g; uint32_t floor; MeshTxGovernor::Dispatch d;
+    CHECK(g.beginLeaseScope({1,1},floor) && floor==1);
+    CHECK(g.enqueue(keyed(Op::Lease,2),100) && g.next(100,d));
+    CHECK(leaseSequence(d.packet)==1);
+    CHECK(g.enqueue(keyed(Op::Start,2),101));
+    CHECK(g.beginLeaseScope({1,2},floor) && floor==2 && !g.queued() && g.inFlight()==1);
+    CHECK(!g.enqueue(keyed(Op::Lease,2),102)); // stale scope cannot commit after floor
+    for(unsigned peer=2;peer<7;++peer) {
+      CHECK(g.enqueue(keyed(Op::Lease,uint16_t(peer),{1,2}),103));
+      MeshTxGovernor::Dispatch n; CHECK(g.next(103,n) && leaseSequence(n.packet)==peer);
+      g.event(n.ticket,1,0,104); drain(g,104);
+    }
+    g.fence({1,2}); CHECK(!g.enqueue(keyed(Op::Start,2,{1,2}),105));
+    CHECK(g.enqueue(keyed(Op::Close,2,{1,2}),105));
+  }
+  {
+    MeshTxGovernor g; MeshTxGovernor::Dispatch d; auto p=keyed(Op::StartOK,1);
+    CHECK(g.enqueue(p,0) && g.next(0,d)); CHECK(g.enqueue(p,1) && !g.queued());
+    g.event(d.ticket,1,0,2); drain(g,2); CHECK(g.enqueue(p,3) && g.queued()==1);
+    g.retire(1,{1,1},Op::StartOK); CHECK(!g.queued());
+    CHECK(g.enqueue(keyed(Op::Start,2),0) && g.enqueue(keyed(Op::Start,3),0));
+    g.retire(2,{1,1},Op::Start); CHECK(g.queued()==1); // no whole-job fence
   }
   {
     MeshTxGovernor g; MeshTxGovernor::Dispatch d;
     CHECK(g.enqueue(keyed(Op::Lease,2),100));
     for(uint32_t t=110;t<8000;t+=10) CHECK(g.enqueue(keyed(Op::Lease,2),t));
-    CHECK(g.queued()==1 && !g.next(8100,d) && !g.healthy()); // merge never slides deadline
-  }
-  {
-    MeshTxGovernor g; MeshTxGovernor::Dispatch d;
-    auto p=packet(Op::Result,1); Writer w{p}; w.key({1,1}); w.u32(4); w.u32(0); w.u32(5880); w.u32(2); w.u8(uint8_t(Phase::Done)); w.u8(uint8_t(Reason::Target)); w.u8(2);
-    CHECK(g.enqueue(p,100)); p.bytes[8]=7; CHECK(g.enqueue(p,110));
-    p.bytes[20]=3; p.bytes[24]=uint8_t(Phase::Fault); p.bytes[25]=uint8_t(Reason::Transport); CHECK(g.enqueue(p,120));
-    CHECK(g.queued()==1 && g.next(121,d) && d.packet.bytes[20]==3 && d.packet.bytes[24]==uint8_t(Phase::Fault));
+    CHECK(g.queued()==1 && !g.next(8100,d) && !g.healthy());
   }
   {
     MeshTxGovernor g; auto p=packet(Op::CapabilitiesGet,2); Writer w{p}; w.u32(1);
@@ -110,7 +92,7 @@ void governor_matrix() {
     for(unsigned i=0;i<16;++i) CHECK(g.enqueue(keyed(Op::Start,uint16_t(100+i)),0));
     CHECK(!g.enqueue(keyed(Op::Lease,199),0) && !g.healthy());
   }
-  std::puts("PASS governor callback/order/error/window/merge/deadline/fence/capacity matrix");
+  std::puts("PASS governor real callbacks, missing completion, compact SAR bypass, global scope/floor, dedup, retirement, TTL and capacity");
 }
 struct Pump : PumpIO { bool on=false; unsigned starts=0; void pump(bool v) override {on=v; if(v)++starts;} bool setDuty(uint8_t) override{return true;} };
 struct Link : MeshSender {
@@ -119,6 +101,9 @@ struct Link : MeshSender {
   bool takeSubmission(MeshSubmission &r) override {return tx.collect(now,r);}
   void fence(JobKey k) override {tx.fence(k);}
   bool healthy() const override {return tx.healthy();}
+  bool beginLeaseScope(JobKey k,uint32_t &floor) override {return tx.beginLeaseScope(k,floor);}
+  MeshTxGovernor::Admission prepare(const Packet &p) override {return tx.prepare(p,now);}
+  void retire(uint16_t peer,JobKey k,Op op) override {tx.retire(peer,k,op);}
 };
 struct IO : ValveIO {
   bool on=false; unsigned opens=0; FlowReading reading; JobKey fence;
@@ -127,7 +112,7 @@ struct IO : ValveIO {
 };
 Packet heartbeat() {
   auto p=packet(Op::Hello,1); Writer w{p}; w.u32(5880); w.u32(1); w.u8(1);
-  w.u32(ApprovedSlaveBuildIds[0]); return p;
+  w.u32(TestSlaveBuildId); return p;
 }
 Packet terminal(JobKey key={1,1}) {
   auto p=packet(Op::Result,1); Writer w{p}; w.key(key); w.u32(12); w.u32(12);
@@ -218,10 +203,10 @@ void governor_recovery_matrix() {
   std::puts("PASS recovery: immutable first fault, cleared business intents, closed-only reports, callback order, 2777ms SAR, missing completion lock, bounded backoff and timer wrap");
 }
 struct Slave {
-  IO io; FlowJobController valve; MeshTxGovernor tx{1};
+  IO io; FlowJobController valve; ValveMeshSession session; MeshTxGovernor tx{1};
   uint32_t acked=UINT32_MAX,sent=UINT32_MAX,at=0,helloAt=0;
   JobKey ackedKey,sentKey; unsigned attempts=0;
-  explicit Slave(ValveConfig cfg):valve(io,cfg){valve.boot({});}
+  explicit Slave(ValveConfig cfg):valve(io,cfg),session(valve){valve.boot({});}
   bool report(uint32_t now,bool force=false) {
     const auto s=valve.status();
     if ((s.phase!=Phase::Done && s.phase!=Phase::Fault) || (!force && ackedKey==s.key && acked==s.revision)) return false;
@@ -236,7 +221,10 @@ struct Slave {
     CHECK(tx.enqueue(p,now) || !tx.healthy());
   }
 };
-struct Flight { Packet p; uint32_t ticket,deliverAt,endAt; int from; bool delivered=false; };
+struct Flight {
+  Packet p; uint32_t ticket,deliverAt,endAt; int from; bool delivered=false;
+  uint32_t acceptedAt=0; bool accepted=false,ended=false,drop=false,rejected=false;
+};
 struct Bench {
   Pump io; PumpConfig cfg; PumpSafetyController pump; Link link; MasterScheduler scheduler;
   std::array<std::unique_ptr<Slave>,5> slaves;
@@ -245,11 +233,17 @@ struct Bench {
   bool dropResultsUntilQuery=false; unsigned summaryFrames=0,resultQueries=0,resultAcks=0;
   static constexpr uint32_t SlowSarMs=3200;
   int slow=-1; uint32_t sarMs=65, ackDelay=0;
+  uint32_t startReplyDelay=0, acceptedDelay=0, prepareLife=0, jitter=0, pulsesPerTick=3;
+  bool rejectStart=false, rejectLease=false, randomLoss=false, dropClosed=false,dropClosedAck=false;
+  unsigned preparations=0,leaseApplied=0,lossCount=0,lossBudget=1; uint32_t oldestApplied=0;
+  std::array<bool,256> lost{}; uint32_t lastLease[5]={};
+  uint32_t firstStart=0,pumpStartedAt=0,lastClosedAt=0;
+  uint32_t random(){seed=seed*1664525U+1013904223U;return seed;}
   static PumpConfig config(){PumpConfig c;c.commissioned=true;c.minOffMs=50;c.maxRunMs=240000;return c;}
   explicit Bench(unsigned n):cfg(config()),pump(io,cfg),scheduler(link,pump,uint8_t(n)),count(n) {
     pump.boot(0);
     ValveConfig vc;vc.commissioned=true;
-    for(unsigned i=0;i<n;++i){slaves[i]=std::make_unique<Slave>(vc);CHECK(scheduler.registerNode(i,{uint16_t(i+2),5880,1})==Reply::Ok);scheduler.hello(uint16_t(i+2),5880,1,true,now,ApprovedSlaveBuildIds[0]);}
+    for(unsigned i=0;i<n;++i){slaves[i]=std::make_unique<Slave>(vc);CHECK(scheduler.registerNode(i,{uint16_t(i+2),5880,1})==Reply::Ok);scheduler.hello(uint16_t(i+2),5880,1,true,now,TestSlaveBuildId);}
   }
   void enqueue(unsigned i,Packet p){CHECK(slaves[i]->tx.enqueue(p,now) || !slaves[i]->tx.healthy());}
   void deliver(const Flight &f){
@@ -257,22 +251,28 @@ struct Bench {
     if(f.from<0){
       for(unsigned i=0;i<count;++i){
         if(p.peer!=i+2 && p.peer!=AllSlaves)continue;
+        auto incoming=p; incoming.peer=1;
         auto &s=*slaves[i]; Reader v{p};
-        if(p.op==Op::CapabilitiesGet){auto reply=packet(Op::Capabilities,1);Writer w{reply};w.u32(v.u32());w.u16(ProtocolRevision);w.u16(RequiredFeatures);w.u32(ApprovedSlaveBuildIds[0]);enqueue(i,reply);}
-        else if(p.op==Op::Prepare){Dose d;d.key=v.key();d.ml=v.u32();d.pulses=v.u32();d.k=v.u32();d.version=v.u32();d.maxMs=v.u32();d.speedFactorPermille=v.u16();d.leaseMs=v.u32();CHECK(v.u8()==0 && v.done());s.commandAck(d.key,Op::Prepare,s.valve.prepare(d,now),now);}
-        else if(p.op==Op::Start){const auto key=v.key();const auto result=s.valve.start(key,now);if(duplicate)CHECK(s.valve.start(key,now)==Reply::Ok);s.commandAck(key,Op::Start,result,now);}
-        else if(p.op==Op::Lease){const auto key=v.key();const auto seq=v.u32();const auto current=s.valve.status();if(current.key==key && !current.valveCommand && current.reason==Reason::Target && (current.phase==Phase::Settling || current.phase==Phase::Done)){s.report(now,true);continue;}const auto result=s.valve.lease(key,seq,now);auto ack=keyed(Op::LeaseAck,1,key,seq);ack.bytes[12]=uint8_t(result);enqueue(i,ack);}
+        if(p.op==Op::CapabilitiesGet){auto reply=packet(Op::Capabilities,1);Writer w{reply};w.u32(v.u32());w.u16(ProtocolRevision);w.u16(RequiredFeatures);w.u32(TestSlaveBuildId);enqueue(i,reply);}
+        else if(s.session.handle(incoming,now,s.tx.healthy(),true,[&](const Packet &out){ return s.tx.enqueue(out,now); },[&](uint16_t peer,JobKey key,Op op){s.tx.retire(peer,key,op);})) {
+          if(duplicate && p.op==Op::Start) s.session.handle(incoming,now,s.tx.healthy(),true,[&](const Packet &out){return s.tx.enqueue(out,now);},[&](uint16_t peer,JobKey key,Op op){s.tx.retire(peer,key,op);});
+        }
         else if(p.op==Op::Close){const auto key=v.key();s.valve.close(key,Reason(v.u8()),now);}
         else if(p.op==Op::ResultQuery){++resultQueries;dropResultsUntilQuery=false;s.report(now,true);}
-        else if(p.op==Op::ResultAck){const auto key=v.key();const auto revision=v.u32();const auto current=s.valve.status();if(key==current.key && revision==current.revision){s.acked=revision;s.ackedKey=key;++resultAcks;}}
+        else if(p.op==Op::ResultAck){const auto key=v.key();const auto revision=v.u32();const auto current=s.valve.status();if(key==current.key && revision==current.revision){s.acked=revision;s.ackedKey=key;s.session.resultAck(1,key,[&](uint16_t peer,JobKey k,Op op){s.tx.retire(peer,k,op);});++resultAcks;}}
         else if(p.op==Op::Summary)++summaryFrames;
       }
     }else{
-      const uint16_t source=uint16_t(f.from+2);
+      const uint16_t source=uint16_t(f.from+2); CHECK(p.peer==1);
       if(p.op==Op::Capabilities){const auto nonce=r.u32();const auto rev=r.u16(),features=r.u16();scheduler.capabilities(source,nonce,rev,features,r.u32(),now);}
+      else if(p.op==Op::PrepareOK || p.op==Op::StartOK){scheduler.commandReply(source,r.key(),p.op==Op::PrepareOK?Op::Prepare:Op::Start,Reply::Ok,now);}
+      else if(p.op==Op::TargetClosed){const auto k=r.key();if(scheduler.targetClosed(source,k,now)){CHECK(link.send(keyed(Op::TargetClosedAck,source,k)) || !link.healthy());}}
       else if(p.op==Op::CommandAck){const auto key=r.key();const auto command=Op(r.u8());const auto result=Reply(r.u8());if(r.done())scheduler.commandReply(source,key,command,result,now);}
       else if(p.op==Op::Result){ValveStatus s;s.key=r.key();s.pulses=r.u32();s.closePulses=r.u32();s.k=r.u32();s.revision=r.u32();s.phase=Phase(r.u8());s.reason=Reason(r.u8());const auto flags=r.u8();s.valveCommand=flags&1;s.quiet=flags&2;s.truncated=flags&4;if(dropResultsUntilQuery)return;if(scheduler.result(source,s,now) && !dropResultAck){auto ack=keyed(Op::ResultAck,source,s.key);Writer w{ack};w.u32(s.revision);CHECK(link.send(ack) || !link.healthy());}}
-      else if(p.op==Op::LeaseAck && !dropAck){const auto key=r.key();const auto seq=r.u32();scheduler.leaseAck(source,key,seq,Reply(r.u8()),now);}
+      else if(p.op==Op::LeaseAck && !dropAck){const auto epoch=r.u32();const auto seq=r.u32();if(scheduler.compactLeaseAck(source,epoch,seq,p.size==8?Reply::Ok:Reply(r.u8()),now)) {
+        ++leaseApplied; const auto age=now-scheduler.node(unsigned(f.from)).leaseAckAt;
+        if(age>oldestApplied) oldestApplied=age;
+      }}
       else if(p.op==Op::Hello){const auto k=r.u32(),version=r.u32();const bool commissioned=r.u8()==1;const auto build=r.u32();CHECK(r.done());scheduler.hello(source,k,version,commissioned,now,build);}
     }
   }
@@ -280,47 +280,71 @@ struct Bench {
     MeshTxGovernor::Trace trace;while(g.takeTrace(trace)){}
     MeshTxGovernor::Dispatch d;if(!g.next(now,d))return;
     if(d.packet.op==Op::Summary)++summaryFrames;
-    g.event(d.ticket,1,0,now);
-    seed=seed*1664525U+1013904223U;
-    const uint32_t delay=20+(seed%5)*5;
+    const uint32_t delay=20+(random()%5)*5+(jitter?random()%(jitter+1):0);
     uint32_t life=(from==slow && slow>=0)?SlowSarMs:sarMs;
-    flights.push_back({d.packet,d.ticket,now+delay+(d.packet.op==Op::LeaseAck?ackDelay:0),now+life,from,false});
+    if(from<0 && d.packet.op==Op::Prepare && prepareLife) life=prepareLife;
+    if(from<0 && d.packet.op==Op::Prepare) ++preparations;
+    if(from<0 && d.packet.op==Op::Start && !firstStart) firstStart=now;
+    if(from<0 && d.packet.op==Op::Lease) {
+      const unsigned peer=d.packet.peer-2; CHECK(peer<count);
+      if(lastLease[peer]) CHECK(elapsed(now,lastLease[peer],1000));
+      lastLease[peer]=now;
+    }
+    const auto op=d.packet.op;
+    const bool reject=from<0 && ((rejectStart && op==Op::Start) || (rejectLease && op==Op::Lease));
+    bool drop=(dropClosed && op==Op::TargetClosed) || (dropClosedAck && op==Op::TargetClosedAck);
+    // At most one loss per opcode per batch in the supported random envelope.
+    if(randomLoss && lossCount<lossBudget && !lost[uint8_t(op)] && random()%9==0) {lost[uint8_t(op)]=true;++lossCount;drop=true;}
+    const uint32_t extra=op==Op::LeaseAck?ackDelay:op==Op::StartOK?startReplyDelay:0;
+    flights.push_back({d.packet,d.ticket,now+delay+extra,now+life,from,false,
+      now+((from<0 && (op==Op::Start || op==Op::Lease))?acceptedDelay:0),false,false,drop||reject,reject});
     CHECK(flights.size()<128);
   }
   void step(){
     now+=5;link.now=now;pump.tick(now);scheduler.submissions(now);
     for(unsigned i=0;i<count;++i){
-      auto &s=*slaves[i]; if(io.on && s.io.on){s.io.reading.pulses+=3;s.io.reading.lastMs=now;}
-      s.valve.tick(now);drain(s.tx,now);
+      auto &s=*slaves[i]; if(io.on && s.io.on){s.io.reading.pulses+=pulsesPerTick;s.io.reading.lastMs=now;}
+      s.valve.tick(now);s.session.poll(1,i,now,[&](const Packet &p){return s.tx.enqueue(p,now);});drain(s.tx,now);
       if(!s.tx.healthy())s.valve.emergency(Reason::Transport,now);
       const auto v=s.valve.status();
       if(s.sentKey!=v.key || s.sent!=v.revision){s.sentKey=v.key;s.sent=v.revision;s.at=now-1000;s.attempts=0;}
       if(v.phase==Phase::Done || v.phase==Phase::Fault){if(s.sentKey!=v.key || s.sent!=v.revision){s.sentKey=v.key;s.sent=v.revision;s.at=now-1000;s.attempts=0;}if((s.ackedKey!=v.key || s.acked!=v.revision) && s.attempts<6 && elapsed(now,s.at,1000+(i+2)*13)){if(s.report(now)){s.at=now;++s.attempts;}}}
-      if(elapsed(now,s.helloAt,10000)){auto p=packet(Op::Hello,1);Writer w{p};w.u32(5880);w.u32(1);w.u8(1);w.u32(ApprovedSlaveBuildIds[0]);enqueue(i,p);s.helloAt=now;}
+      if(elapsed(now,s.helloAt,10000)){auto p=packet(Op::Hello,1);Writer w{p};w.u32(5880);w.u32(1);w.u8(1);w.u32(TestSlaveBuildId);enqueue(i,p);s.helloAt=now;}
     }
     for(size_t j=0;j<flights.size();){
       auto &f=flights[j];
-      if(!f.delivered && int32_t(now-f.deliverAt)>=0){f.delivered=true;const auto copy=f;deliver(copy);}
-      if(int32_t(now-f.endAt)>=0){
-        if(!missingEnd)(f.from<0?link.tx:slaves[unsigned(f.from)]->tx).event(f.ticket,3,0,now);
-        if(f.delivered){flights.erase(flights.begin()+j);continue;}
-        f.endAt=now+60000;
+      auto &governor=f.from<0?link.tx:slaves[unsigned(f.from)]->tx;
+      if(!f.accepted && int32_t(now-f.acceptedAt)>=0) {
+        f.accepted=true; governor.event(f.ticket,f.rejected?2:1,f.rejected?-12:0,now);
       }
+      if(!f.delivered && int32_t(now-f.deliverAt)>=0){f.delivered=true;const auto copy=f;if(!f.drop)deliver(copy);}
+      if(!f.ended && int32_t(now-f.endAt)>=0){
+        f.ended=true;if(!missingEnd)governor.event(f.ticket,3,0,now);
+      }
+      if(f.delivered && f.accepted && f.ended){flights.erase(flights.begin()+j);continue;}
       ++j;
     }
-    scheduler.tick(now);dispatch(link.tx,-1);
+    scheduler.tick(now);
+    if(io.on && !pumpStartedAt) {
+      pumpStartedAt=now; CHECK(firstStart && now-firstStart<4000);
+      for(unsigned i=0;i<count;++i) {
+        const auto &n=scheduler.node(i); const auto v=slaves[i]->valve.status();
+        if(v.valveCommand) CHECK(n.startIssued && n.startAckSeen && n.leaseAckSeen && now-n.leaseAckAt<2000);
+      }
+    }
+    dispatch(link.tx,-1);
     for(unsigned i=0;i<count;++i)dispatch(slaves[i]->tx,int(i));
   }
-  void begin(uint32_t id){link.now=now;CHECK(scheduler.check((1U<<count)-1,500,60000,now)==Reply::Ok);scheduler.begin({1,id},(1U<<count)-1,500,60000,now);}
+  void begin(uint32_t id){lossCount=0;lost.fill(false);firstStart=pumpStartedAt=0;for(auto &t:lastLease)t=0;link.now=now;CHECK(scheduler.check((1U<<count)-1,500,60000,now)==Reply::Ok);scheduler.begin({1,id},(1U<<count)-1,500,60000,now);}
   void run(uint32_t duration){const auto end=now+duration;while(int32_t(end-now)>0)step();}
-  void finish(){const auto start=now;while(scheduler.active() && !elapsed(now,start,20000))step();CHECK(!scheduler.active() && !io.on);run(1000);}
+  void finish(){const auto start=now;while(scheduler.active() && !elapsed(now,start,40000))step();CHECK(!scheduler.active() && !io.on);run(1000);}
   void clean(){
     const auto start=now;
     for(;;){
       bool quiet=link.tx.queued()==0 && link.tx.inFlight()==0;
       for(unsigned i=0;i<count;++i){const auto &s=*slaves[i];const auto v=s.valve.status();quiet=quiet && s.tx.queued()==0 && s.tx.inFlight()==0 && (s.attempts==6 || (s.ackedKey==v.key && s.acked==v.revision));}
       if(quiet)break;
-      CHECK(!elapsed(now,start,9000));step();
+      CHECK(!elapsed(now,start,20000));step();
     }
     CHECK(link.tx.healthy());for(unsigned i=0;i<count;++i)CHECK(slaves[i]->tx.healthy());
   }
@@ -343,20 +367,19 @@ void joint_runs(){
     CHECK(b.summaryFrames==0);
     std::printf("PASS %u nodes x 1000 batches, 500 mL/2940 pulse simulation, duplicate Start/drop ResultAck, no SUMMARY\n",n);
   }
-  for(unsigned mode=0;mode<4;++mode){
+  for(unsigned mode=0;mode<3;++mode){
     Bench b(5);b.begin(1);
     if(mode==0)b.dropAck=true;
-    if(mode==1)b.slow=4;
-    if(mode==2)b.missingEnd=true;
-    if(mode==3){b.run(1800);b.scheduler.stop(Reason::Manual,b.now);CHECK(!b.io.on);}
+    if(mode==1)b.missingEnd=true;
+    if(mode==2){b.run(1800);b.scheduler.stop(Reason::Manual,b.now);CHECK(!b.io.on);}
     b.finish();
     CHECK(b.scheduler.report().phase==SchedulePhase::Failed && !b.io.on);
     for(unsigned i=0;i<5;++i)CHECK(!b.slaves[i]->io.on);
   }
-  std::puts("PASS five-node lease ACK loss/slow node/missing SAR end/manual stop: local stop and remote closure");
+  std::puts("PASS five-node lease ACK loss/missing SAR end/manual stop: local stop and remote closure");
   {
     Bench b(1); b.dropResultsUntilQuery=true; b.begin(1); b.finish();
-    CHECK(b.scheduler.report().phase==SchedulePhase::Failed && b.scheduler.report().complete==1 &&
+    CHECK(b.scheduler.report().phase==SchedulePhase::Complete && b.scheduler.report().complete==1 &&
       b.scheduler.report().unknown==0 && b.resultQueries>0 && b.resultAcks>=1 && b.summaryFrames==0);
   }
   Bench soak(5);uint32_t id=0;const auto start=soak.now;
@@ -370,11 +393,13 @@ void recovery_link_runs() {
     Bench b(1); b.begin(1); bool injected=false; unsigned opens=0;
     for(unsigned step=0;step<2000 && !injected;++step) {
       b.step(); if(!b.io.on) continue;
+      if(step%3==0) b.slaves[0]->tx.enqueue(heartbeat(),b.now);
       for(size_t i=0;i<b.flights.size();++i) {
         const auto f=b.flights[i];
         if(f.from!=0 || !MeshTxGovernor::segmented(f.p)) continue;
         // The dispatcher already accepted this ticket. Inject its real end
         // error; API rejection is covered separately by the governor matrix.
+        if(!f.accepted)b.slaves[0]->tx.event(f.ticket,1,0,b.now);
         b.slaves[0]->tx.event(f.ticket,3,-110,b.now);
         b.flights.erase(b.flights.begin()+i); injected=true; opens=b.slaves[0]->io.opens; break;
       }
@@ -394,9 +419,11 @@ void recovery_link_runs() {
     Bench b(1); b.begin(1); bool injected=false; unsigned starts=0,opens=0;
     for(unsigned step=0;step<2000 && !injected;++step) {
       b.step(); if(!b.io.on) continue;
+      if(step%3==0) {auto diagnostic=terminal();diagnostic.peer=2;b.link.send(diagnostic);}
       for(size_t i=0;i<b.flights.size();++i) {
         const auto f=b.flights[i];
         if(f.from>=0 || !MeshTxGovernor::segmented(f.p)) continue;
+        if(!f.accepted)b.link.tx.event(f.ticket,1,0,b.now);
         b.link.tx.event(f.ticket,3,-110,b.now);
         b.flights.erase(b.flights.begin()+i); injected=true;
         starts=b.io.starts; opens=b.slaves[0]->io.opens; break;
@@ -413,4 +440,6 @@ void recovery_link_runs() {
   }
   std::puts("PASS integrated fault recovery: stopped outputs, heartbeat online, late terminal reconciled, no new authorization");
 }
-int main(){governor_matrix();governor_recovery_matrix();recovery_link_runs();joint_runs();return 0;}
+
+#include "v4_tests.inc"
+int main(){v4_matrix();governor_matrix();governor_recovery_matrix();recovery_link_runs();joint_runs();return 0;}

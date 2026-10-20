@@ -4,6 +4,7 @@
 #include "esp_log.h"
 #include "esp_ble_mesh_ble_api.h"
 #include "driver/uart.h"
+#include "driver/uart_vfs.h"
 #include "freertos/task.h"
 #include <cstdio>
 #include <cstring>
@@ -17,6 +18,7 @@ esp_gatt_if_t interface = ESP_GATT_IF_NONE;
 uint16_t handles[6] = {}, connection = 0, mtu = 23;
 uint8_t remote[6] = {};
 std::atomic<bool> connected{false}, secure{false}, subscribed{false}, advertising{false}, pendingAdv{false};
+std::atomic<TaskHandle_t> bluetoothTask{nullptr};
 uint8_t advIndex = 0;
 portMUX_TYPE textMux = portMUX_INITIALIZER_UNLOCKED;
 char latest[192] = "PUMP_MULTI_V1\n";
@@ -126,6 +128,7 @@ void gapCb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *p) {
   }
 }
 void gattsCb(esp_gatts_cb_event_t event, esp_gatt_if_t iface, esp_ble_gatts_cb_param_t *p) {
+  bluetoothTask.store(xTaskGetCurrentTaskHandle());
   if (event == ESP_GATTS_REG_EVT) {
     ESP_LOGI("gateway", "GATT app register: status=%d app_id=0x%04x iface=%u",
       p->reg.status, unsigned(p->reg.app_id), unsigned(iface));
@@ -212,7 +215,7 @@ bool ControlGateway::init(uint32_t passkey, const char *name) {
   memcpy(deviceName, name, strlen(name) + 1);
   commands_ = xQueueCreate(12, sizeof(CommandLine)); output_ = xQueueCreate(32, 192);
   if (!commands_ || !output_) return false;
-  if (uart_driver_install(UART_NUM_0, 1024, 0, 0, nullptr, 0) != ESP_OK) return false;
+  if (uart_driver_install(UART_NUM_0, 1024, 2048, 0, nullptr, 0) != ESP_OK) return false;
   uart_config_t uart{};
   uart.baud_rate = 115200;
   uart.data_bits = UART_DATA_8_BITS;
@@ -226,6 +229,10 @@ bool ControlGateway::init(uint32_t passkey, const char *name) {
     uart_driver_delete(UART_NUM_0);
     return false;
   }
+  // ESP_LOG and maintenance replies must share the interrupt-driven TX path.
+  // The default VFS writer polls the FIFO directly and can interleave with
+  // uart_write_bytes(), delaying control and corrupting diagnostic lines.
+  uart_vfs_dev_use_driver(UART_NUM_0);
   if (!pinCode) {
     // Keep USB maintenance available, but never expose an unauthenticated
     // business service when the device has not been commissioned with a PIN.
@@ -281,6 +288,10 @@ bool ControlGateway::submit(const char *text, size_t length, bool bluetooth) {
   return true;
 }
 bool ControlGateway::receive(CommandLine &cmd) { return xQueueReceive(commands_, &cmd, 0) == pdTRUE; }
+uint32_t ControlGateway::bluetoothStackMinimumBytes() const {
+  const auto task = bluetoothTask.load();
+  return task ? uxTaskGetStackHighWaterMark(task) : 0;
+}
 bool ControlGateway::publish(const char *text) {
   char line[192] = {}; snprintf(line, sizeof(line), "%s\n", text);
   return output_ && xQueueSend(output_, line, 0) == pdTRUE;
@@ -299,7 +310,11 @@ void ControlGateway::ioWorker() {
     }
     char out[192];
     if (xQueueReceive(output_, out, 0) == pdTRUE) {
-      uart_write_bytes(UART_NUM_0, out, strlen(out));
+      // Use the same FILE lock as ESP_LOG's vprintf for complete reply lines.
+      flockfile(stdout);
+      fwrite(out, 1, strlen(out), stdout);
+      fflush(stdout);
+      funlockfile(stdout);
       portENTER_CRITICAL(&textMux); memcpy(latest, out, sizeof(latest)); portEXIT_CRITICAL(&textMux);
       if (connected && secure && subscribed) {
         const size_t len = strlen(out), chunk = std::min<size_t>(mtu - 3, 180);

@@ -1,0 +1,318 @@
+{
+  "generated_utc": "2026-10-20T11:59:16.411765+00:00",
+  "conclusion": "SLAVE_BUILD_NOT_APPROVED",
+  "job": "141:62",
+  "capture_folder": "D:\\pump\\pump-muti\\.pio\\diagnostics\\start-stop-20261020-195530",
+  "capture_start": "2026-10-20T11:55:27.545+00:00",
+  "capture_end": "2026-10-20T11:58:27.564+00:00",
+  "capture_errors": [],
+  "build_audit": {
+    "master": {
+      "git_head": "96420a742aa462106498a8f6b1768c137f4bfd7e",
+      "cached_build_id": "eea832c3",
+      "current_build_id": "eea832c3",
+      "current_sources_match_cached_inputs": true,
+      "cached_identity_valid": true,
+      "git_blob_build_id": "4a565883",
+      "working_vs_git": [
+        {
+          "name": "include/application.h",
+          "eol_only": true
+        },
+        {
+          "name": "include/control_gateway.h",
+          "eol_only": true
+        },
+        {
+          "name": "include/control_request.h",
+          "eol_only": true
+        },
+        {
+          "name": "include/master_scheduler.h",
+          "eol_only": true
+        },
+        {
+          "name": "include/mesh_deployment.h",
+          "eol_only": true
+        },
+        {
+          "name": "include/mesh_transport.h",
+          "eol_only": true
+        },
+        {
+          "name": "include/mesh_tx_diagnostics.h",
+          "eol_only": true
+        },
+        {
+          "name": "include/mesh_tx_governor.h",
+          "eol_only": true
+        },
+        {
+          "name": "include/persistent_state.h",
+          "eol_only": true
+        },
+        {
+          "name": "include/protocol.h",
+          "eol_only": true
+        },
+        {
+          "name": "include/README",
+          "eol_only": true
+        },
+        {
+          "name": "include/storage.h",
+          "eol_only": true
+        },
+        {
+          "name": "src/application.cpp",
+          "eol_only": true
+        },
+        {
+          "name": "src/control_gateway.cpp",
+          "eol_only": true
+        },
+        {
+          "name": "src/main.cpp",
+          "eol_only": true
+        },
+        {
+          "name": "src/master_scheduler.cpp",
+          "eol_only": true
+        },
+        {
+          "name": "src/mesh_transport.cpp",
+          "eol_only": true
+        },
+        {
+          "name": "src/storage.cpp",
+          "eol_only": true
+        },
+        {
+          "name": "tools/mesh_sdk/bt-baseline.json",
+          "eol_only": true
+        },
+        {
+          "name": "tools/mesh_sdk/patch.json",
+          "eol_only": true
+        },
+        {
+          "name": "tools/mesh_sdk/tracked-send.patch",
+          "eol_only": true
+        },
+        {
+          "name": "platformio.ini",
+          "eol_only": false
+        },
+        {
+          "name": "tools/prepare_mesh_sdk.py",
+          "eol_only": true
+        },
+        {
+          "name": "tools/mesh_sdk_build.py",
+          "eol_only": true
+        }
+      ]
+    },
+    "slave": {
+      "git_head": "f3494d770c7243c1f71433edcc35f8c8c1f40cec",
+      "cached_build_id": "c0f6b78c",
+      "current_build_id": "c0f6b78c",
+      "current_sources_match_cached_inputs": true,
+      "cached_identity_valid": true,
+      "git_blob_build_id": "088f7f04",
+      "working_vs_git": [
+        {
+          "name": "include/application.h",
+          "eol_only": true
+        },
+        {
+          "name": "include/board_profile.h",
+          "eol_only": true
+        },
+        {
+          "name": "include/control_request.h",
+          "eol_only": true
+        },
+        {
+          "name": "include/flow_job_controller.h",
+          "eol_only": true
+        },
+        {
+          "name": "include/hardware.h",
+          "eol_only": true
+        },
+        {
+          "name": "include/mesh_transport.h",
+          "eol_only": true
+        },
+        {
+          "name": "include/mesh_tx_diagnostics.h",
+          "eol_only": true
+        },
+        {
+          "name": "include/mesh_tx_governor.h",
+          "eol_only": true
+        },
+        {
+          "name": "include/protocol.h",
+          "eol_only": true
+        },
+        {
+          "name": "include/README",
+          "eol_only": true
+        },
+        {
+          "name": "src/application.cpp",
+          "eol_only": true
+        },
+        {
+          "name": "src/control_gateway.cpp",
+          "eol_only": true
+        },
+        {
+          "name": "src/flow_job_controller.cpp",
+          "eol_only": true
+        },
+        {
+          "name": "src/hardware.cpp",
+          "eol_only": true
+        },
+        {
+          "name": "src/main.cpp",
+          "eol_only": true
+        },
+        {
+          "name": "src/mesh_transport.cpp",
+          "eol_only": true
+        },
+        {
+          "name": "src/storage.cpp",
+          "eol_only": true
+        },
+        {
+          "name": "tools/mesh_sdk/bt-baseline.json",
+          "eol_only": true
+        },
+        {
+          "name": "tools/mesh_sdk/patch.json",
+          "eol_only": true
+        },
+        {
+          "name": "tools/mesh_sdk/tracked-send.patch",
+          "eol_only": true
+        },
+        {
+          "name": "platformio.ini",
+          "eol_only": false
+        },
+        {
+          "name": "CMakeLists.txt",
+          "eol_only": true
+        },
+        {
+          "name": "tools/prepare_mesh_sdk.py",
+          "eol_only": true
+        },
+        {
+          "name": "tools/mesh_sdk_build.py",
+          "eol_only": true
+        },
+        {
+          "name": "sdkconfig.defaults",
+          "eol_only": true
+        }
+      ]
+    },
+    "approved_slave_builds": [
+      "dd63e1ad",
+      "7ba339a8"
+    ],
+    "observed_slave_build_id": "c0f6b78c",
+    "observed_slave_approved": false
+  },
+  "prepare_to_abort_ms": 190,
+  "prepare_to_failed_ms": 1190,
+  "sent_job_opcodes": [
+    "c3",
+    "c4",
+    "c7"
+  ],
+  "pump_on_events": 0,
+  "mesh_diagnostics": {
+    "COM5": {
+      "first": {
+        "healthy": 1,
+        "expired": 0,
+        "faults": 0,
+        "hello_timeout": 0
+      },
+      "last": {
+        "healthy": 1,
+        "expired": 0,
+        "faults": 0,
+        "hello_timeout": 0
+      }
+    },
+    "COM6": {
+      "first": {
+        "healthy": 1,
+        "expired": 1,
+        "faults": 0,
+        "hello_timeout": 9
+      },
+      "last": {
+        "healthy": 1,
+        "expired": 1,
+        "faults": 0,
+        "hello_timeout": 9
+      }
+    }
+  },
+  "evidence": [
+    {
+      "kind": "serial",
+      "received_utc": "2026-10-20T11:56:47.304+00:00",
+      "source": "COM5",
+      "role": "master",
+      "text": "I (861371) schedule: t=860784 job=141:62 phase=1 reason=NONE selected=00000001 done=00000000 failed=00000000 unknown=00000000"
+    },
+    {
+      "kind": "serial",
+      "received_utc": "2026-10-20T11:56:47.453+00:00",
+      "source": "COM5",
+      "role": "master",
+      "text": "I (861527) cap_rx: t=860974 peer=0002 nonce=1366259795 protocol=3 features=003f build=c0f6b78c applied=1"
+    },
+    {
+      "kind": "serial",
+      "received_utc": "2026-10-20T11:56:47.474+00:00",
+      "source": "COM5",
+      "role": "master",
+      "text": "I (861528) schedule: t=860974 job=141:62 phase=4 reason=PROTOCOL selected=00000001 done=00000000 failed=00000001 unknown=00000000"
+    },
+    {
+      "kind": "serial",
+      "received_utc": "2026-10-20T11:56:48.503+00:00",
+      "source": "COM5",
+      "role": "master",
+      "text": "I (862563) schedule: t=861974 job=141:62 phase=7 reason=PROTOCOL selected=00000001 done=00000001 failed=00000001 unknown=00000000"
+    },
+    {
+      "kind": "serial",
+      "received_utc": "2026-10-20T11:56:57.581+00:00",
+      "source": "COM6",
+      "role": "slave",
+      "text": "LOCAL job=141:62 phase=FAULT reason=PROTOCOL valve_command=0 pulses=0 ml=0 k=5880 version=1 quiet=1 truncated=0"
+    }
+  ],
+  "file_sha256": {
+    "capture.jsonl": "a075e0da9231feb27e373524795d3a16a77340a90065d65c5023fe8088dda08b",
+    "COM5.log": "bef0a888382bb137f7f2f87e0b4f3fd550028e68adee6d9bbc5ed1149b502c8d",
+    "COM6.log": "e4d835d7898fd7bd06f3b7936bb16a50892a57af146419c054fb8b38ca667957",
+    "build-audit.json": "e2856767d4fa5566b18009df10a305823c03570ea89e65041e08f5fb342f9718"
+  },
+  "limitations": [
+    "No physical pump, valve, Hall sensor or dispensed-volume acceptance performed.",
+    "No firmware source changes or flashing performed."
+  ]
+}

@@ -2,6 +2,7 @@
 #include "mesh_tx_diagnostics.h"
 #include "hardware.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "esp_system.h"
 #include "esp_task_wdt.h"
 #include "freertos/task.h"
@@ -191,21 +192,30 @@ void Application::incoming(const Packet &p, uint32_t now) {
         (unsigned long)now,p.peer,(unsigned long)nonce,revision,features,(unsigned long)build,applied);
     }
   } else if (p.op == Op::LeaseAck) {
-    const JobKey key = r.key(); const uint32_t sequence = r.u32(); const uint8_t rawReply = r.u8();
-    if (r.done() && rawReply <= uint8_t(Reply::Unknown)) {
-      bool matched=false; uint32_t issued=0;
-      const auto &node=scheduler_.node(scheduler_.find(p.peer));
-      for (const auto &v:node.leases) if (v.sequence==sequence) { matched=true; issued=v.issuedAt; }
-      const bool applied=scheduler_.leaseAck(p.peer,key,sequence,Reply(rawReply),now);
-      ESP_LOGI("lease_rx", "t=%lu peer=%04x job=%lu:%lu seq=%lu result=%s matched=%u issued=%lu age=%lu applied=%u",
-        (unsigned long)now,p.peer,(unsigned long)key.epoch,(unsigned long)key.id,(unsigned long)sequence,
-        replyName(Reply(rawReply)),matched,(unsigned long)issued,(unsigned long)(matched?now-issued:0),applied);
-    }
-  } else if (p.op == Op::CommandAck) {
-    const JobKey key = r.key(); const uint8_t rawCommand = r.u8(), rawReply = r.u8();
-    if (r.done() && (rawCommand == uint8_t(Op::Prepare) || rawCommand == uint8_t(Op::Start)) &&
-        rawReply <= uint8_t(Reply::Unknown))
-      scheduler_.commandReply(p.peer, key, Op(rawCommand), Reply(rawReply), now);
+    if (!controlFormat(p)) return;
+    const uint32_t epoch=r.u32(), sequence=r.u32();
+    const Reply reply=p.size==8 ? Reply::Ok : Reply(r.u8());
+    bool matched=false; uint32_t issued=0;
+    const auto &node=scheduler_.node(scheduler_.find(p.peer));
+    for (const auto &v:node.leases) if (v.sequence==sequence) { matched=true; issued=v.issuedAt; }
+    const bool applied=scheduler_.compactLeaseAck(p.peer,epoch,sequence,reply,now);
+    ESP_LOGI("lease_rx", "t=%lu peer=%04x epoch=%lu seq=%lu result=%s matched=%u issued=%lu age=%lu applied=%u",
+      (unsigned long)now,p.peer,(unsigned long)epoch,(unsigned long)sequence,replyName(reply),matched,
+      (unsigned long)issued,(unsigned long)(matched?now-issued:0),applied);
+  } else if (p.op == Op::CommandAck || p.op==Op::PrepareOK || p.op==Op::StartOK) {
+    if (!controlFormat(p)) return;
+    const auto key=r.key();
+    const Op command=p.op==Op::PrepareOK ? Op::Prepare : p.op==Op::StartOK ? Op::Start : Op(r.u8());
+    const Reply reply=p.op==Op::CommandAck ? Reply(r.u8()) : Reply::Ok;
+    const bool applied=scheduler_.commandReply(p.peer,key,command,reply,now);
+    ESP_LOGI("command_rx","t=%lu peer=%04x job=%lu:%lu command=%02x reply=%s applied=%u guard=%s",
+      (unsigned long)now,p.peer,(unsigned long)key.epoch,(unsigned long)key.id,uint8_t(command),replyName(reply),applied,scheduler_.guard());
+  } else if (p.op==Op::TargetClosed) {
+    const auto key=r.key(); if (!r.done()) return;
+    const bool applied=scheduler_.targetClosed(p.peer,key,now);
+    if (applied) { auto ack=packet(Op::TargetClosedAck,p.peer); Writer w{ack}; w.key(key); mesh_.send(ack); }
+    ESP_LOGI("closed_rx","t=%lu peer=%04x job=%lu:%lu applied=%u pump=%u",
+      (unsigned long)now,p.peer,(unsigned long)key.epoch,(unsigned long)key.id,applied,pump_.output());
   } else if (p.op == Op::CommissionReply) {
     const uint32_t request = r.u32(); const uint8_t rawReply = r.u8(), configured = r.u8();
     const uint32_t k = r.u32(), version = r.u32();
@@ -572,6 +582,19 @@ void Application::periodic(uint32_t now) {
     storageHealthy_ = store_.write(next); savedJob_ = true;
     if (!storageHealthy_) pump_.trip(PumpFault::Transport, now);
   }
+  if (report.phase != lastPhase_ || strcmp(lastGuard_,scheduler_.guard())!=0) {
+    lastGuard_=scheduler_.guard();
+    ESP_LOGI("start_guard","t=%lu job=%lu:%lu phase=%u guard=%s closed=%08lx final=%08lx",
+      (unsigned long)now,(unsigned long)report.key.epoch,(unsigned long)report.key.id,unsigned(report.phase),lastGuard_,
+      (unsigned long)scheduler_.closedMask(),(unsigned long)scheduler_.finalMask());
+    for(size_t i=0;i<MaxNodes;++i) if(report.selected & (uint32_t(1)<<i)) {
+      const auto &n=scheduler_.node(i);
+      ESP_LOGI("start_proof","peer=%04x start=%lu start_ack=%lu lease=%lu seq=%lu proof_age=%lu accepted=%u",
+        n.config.address,(unsigned long)n.firstStartIssuedAt,(unsigned long)n.startAckAt,
+        (unsigned long)n.leaseAckAt,(unsigned long)n.leaseAckSequence,
+        (unsigned long)(n.leaseAckSeen?now-n.leaseAckAt:0),n.commandAccepted);
+    }
+  }
   if (report.phase != lastPhase_) {
     lastPhase_ = report.phase;
     ESP_LOGI("schedule", "t=%lu job=%lu:%lu phase=%u reason=%s selected=%08lx done=%08lx failed=%08lx unknown=%08lx",
@@ -585,7 +608,7 @@ void Application::periodic(uint32_t now) {
 }
 void Application::run() {
   esp_task_wdt_add(nullptr);
-  ESP_LOGI("build", "id=%08lx protocol=%u features=%04x tracked=1",(unsigned long)PUMP_BUILD_ID,ProtocolRevision,RequiredFeatures);
+  ESP_LOGI("build", "id=%08lx protocol=%u features=%04x tracked=1 max_concurrent=%u",(unsigned long)PUMP_BUILD_ID,ProtocolRevision,RequiredFeatures,board::MaxConcurrent);
   uint32_t previousTick=nowMs(), maxTick=0, diagnosticAt=previousTick;
   bool previousOutput=false;
   char ready[192];
@@ -604,6 +627,11 @@ void Application::run() {
         mesh_.healthy(),(unsigned long)m.submitted,(unsigned long)m.ended,(unsigned long)m.merged,(unsigned long)m.expired,
         (unsigned long)m.faults,(unsigned long)m.helloTimeouts,m.peakSar,m.peakPending,(unsigned long)m.maxSarMs,(unsigned long)maxTick,(unsigned long)m.traceLost);
       publishMeshDiagnostics(mesh_.diagnostics(),mesh_.healthy(),[](const char *line) { ESP_LOGI("mesh_state","%s",line); });
+      ESP_LOGI("runtime_mem", "heap_free=%lu heap_min=%lu largest_free=%lu app_stack_min_bytes=%lu btc_stack_min_bytes=%lu",
+        (unsigned long)esp_get_free_heap_size(),(unsigned long)esp_get_minimum_free_heap_size(),
+        (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
+        (unsigned long)uxTaskGetStackHighWaterMark(nullptr),
+        (unsigned long)gateway_.bluetoothStackMinimumBytes());
     }
     mesh_.managementTick(now); inventoryTick(now);
     pump_.tick(now);

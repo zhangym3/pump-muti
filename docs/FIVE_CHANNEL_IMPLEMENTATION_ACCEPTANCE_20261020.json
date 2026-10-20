@@ -1,0 +1,523 @@
+{
+  "schema_version": 1,
+  "created_utc": "2026-10-20T14:40:15.682484+00:00",
+  "date": "2026-10-20",
+  "kind": "implementation_and_partial_acceptance_record",
+  "overall_status": "NOT_HARDWARE_ACCEPTED",
+  "section_9_complete": false,
+  "software_implementation_status": "PASS_IN_DECLARED_HARNESS_SCOPE",
+  "available_slave_devices": 1,
+  "required_slave_devices": 5,
+  "production_max_concurrent": 1,
+  "candidate_max_concurrent": 5,
+  "protocol_revision": 4,
+  "required_features": "0x01ff",
+  "builds": {
+    "master_production": {
+      "environment": "pump_master",
+      "build_id": "5939b648",
+      "source_sha256": "5939b6482e16873dfd805f5aa29e652c4192ffa59484d6ba245587a1ac70b901",
+      "firmware_sha256": "a214d90ccfe8a5213f449f3a9aafe196a44c876839a101ec0b9635f0d1d9d2da",
+      "firmware_file_bytes": 1010032,
+      "static_size_bytes": {
+        "RAM": 62688,
+        "Flash": 1009628
+      },
+      "build_log": ".pio/build-v4-btc-production.log",
+      "evidence_label": "v4-btc-production",
+      "deployed": false,
+      "water_tested_this_build": false
+    },
+    "master_five_candidate": {
+      "environment": "pump_master_five_candidate",
+      "build_id": "5939b648",
+      "source_sha256": "5939b6482e16873dfd805f5aa29e652c4192ffa59484d6ba245587a1ac70b901",
+      "firmware_sha256": "d0981e6c7284f6dd0a98f857e14f5749f30dbacfdf4807f8c568153f5c0481d5",
+      "firmware_file_bytes": 1010016,
+      "static_size_bytes": {
+        "RAM": 62136,
+        "Flash": 1009620
+      },
+      "build_log": ".pio/build-v4-btc-five.log",
+      "evidence_label": "v4-btc-five",
+      "deployed": true,
+      "water_tested_this_build": false
+    },
+    "slave": {
+      "environment": "valve_slave_c3",
+      "build_id": "144be637",
+      "source_sha256": "144be637c114e9998c0a28ed9505fd16be3500c1c8e99d7adcfbc8a6b973a629",
+      "firmware_sha256": "0a712a9da00dcf6951540f5b5c0663dcedd5e91757d3b9d2552f21529f1ed5cb",
+      "firmware_file_bytes": 977664,
+      "static_size_bytes": {
+        "RAM": 37960,
+        "Flash": 977268
+      },
+      "build_log": ".pio/build-v4.log",
+      "evidence_label": "v4",
+      "deployed": true,
+      "water_tested_this_build": true
+    }
+  },
+  "rejected_master_versions": [
+    {
+      "build_id": "3507fa72",
+      "status": "REJECTED_BOOT_REGRESSION",
+      "device_failure_lines": 137,
+      "reset_banner_lines": 139,
+      "denominator": "visible capture records, not total lifetime resets",
+      "failure": "BTC_TASK stack overflow during GATT registration after buffered UART logging change",
+      "correction": "CONFIG_BT_BTC_TASK_STACK_SIZE 3072 -> 6144 and actual BTC high-water telemetry",
+      "new_water_tasks_started": false
+    }
+  ],
+  "software": {
+    "cases": [
+      {
+        "id": "S01",
+        "scenario": "archived V3 field timing reproduced; V4 same-timing recovery",
+        "result": "PASS_SOFTWARE_ONLY"
+      },
+      {
+        "id": "S02",
+        "scenario": "five-node independently delayed delivery/accepted/SAR end",
+        "result": "PASS_SOFTWARE_ONLY"
+      },
+      {
+        "id": "S03",
+        "scenario": "1999/2000ms proof and 3999/4000ms startup boundaries",
+        "result": "PASS_SOFTWARE_ONLY"
+      },
+      {
+        "id": "S04",
+        "scenario": "early ACK, SDK rejection and end/ACK independent order",
+        "result": "PASS_SOFTWARE_ONLY"
+      },
+      {
+        "id": "S05",
+        "scenario": "cancel/close then late authorization proof rejected",
+        "result": "PASS_SOFTWARE_ONLY"
+      },
+      {
+        "id": "S06",
+        "scenario": "same-epoch task floor and cross-epoch isolation",
+        "result": "PASS_SOFTWARE_ONLY"
+      },
+      {
+        "id": "S07",
+        "scenario": "serialized scope/commit and global sequence allocation",
+        "result": "PASS_SOFTWARE_ONLY"
+      },
+      {
+        "id": "S08",
+        "scenario": "rolling Prepare and first-send/retry fairness",
+        "result": "PASS_SOFTWARE_ONLY"
+      },
+      {
+        "id": "S09",
+        "scenario": "high sequence, UINT32_MAX exhaustion, persistent restart epoch",
+        "result": "PASS_SOFTWARE_ONLY"
+      },
+      {
+        "id": "S10",
+        "scenario": "duplicate/old/expired Lease cannot renew authorization",
+        "result": "PASS_SOFTWARE_ONLY"
+      },
+      {
+        "id": "S11",
+        "scenario": "ten-record ledger and cursor beyond 255",
+        "result": "PASS_SOFTWARE_ONLY"
+      },
+      {
+        "id": "S12",
+        "scenario": "partial/all close; independently lost closure/result ACKs",
+        "result": "PASS_SOFTWARE_ONLY"
+      },
+      {
+        "id": "S13",
+        "scenario": "rejection, missing completion, queue and link faults",
+        "result": "PASS_SOFTWARE_ONLY"
+      },
+      {
+        "id": "S14",
+        "scenario": "V3/V4, length, features, source and changed build handling",
+        "result": "PASS_SOFTWARE_ONLY"
+      },
+      {
+        "id": "S15",
+        "scenario": "1000 randomized five-node batches in declared timing envelope",
+        "result": "PASS_SOFTWARE_ONLY"
+      }
+    ],
+    "master_existing_test_groups": 30,
+    "log_tool_tests": 10,
+    "app_tests": 79,
+    "app_failures": 0,
+    "app_errors": 0,
+    "app_skipped": 0,
+    "deterministic_batches_each_node_count": 1000,
+    "randomized_five_node_batches": 1000,
+    "simulated_eight_hours_completed_batches": 3601,
+    "simulation_counts_as_physical_acceptance": false,
+    "rerun_after_btc_change": [
+      "master host tests",
+      "architecture checks",
+      "10 log parser tests"
+    ],
+    "reused_unchanged_input_evidence": [
+      "slave tests/build",
+      "SDK harness/patch",
+      "APP tests/APK"
+    ]
+  },
+  "water_batches": [
+    {
+      "id": "B001",
+      "master_build": "cf3ba5e2",
+      "slave_build": "144be637",
+      "peer": "0002",
+      "client": "563442454e4348",
+      "sequence": 1,
+      "job": {
+        "epoch": 144,
+        "id": 75
+      },
+      "time_utc_start": "2026-10-20T14:09:28Z",
+      "time_utc_end": "2026-10-20T14:09:46Z",
+      "target_ml": 100,
+      "task_limit_ms": 30000,
+      "pwm": {
+        "level": 2,
+        "duty": 75,
+        "revision": 1
+      },
+      "k": 5880,
+      "calibration_version": 1,
+      "first_start_commit_master_ms": 303969,
+      "start_ack_master_ms": 304116,
+      "pump_on_master_ms": 304166,
+      "start_to_pump_ms": 197,
+      "boot_lease_issued_master_ms": 304120,
+      "boot_proof_age_ms": 46,
+      "valve_on_slave_ms": 299371,
+      "valve_off_slave_ms": 314544,
+      "closed_rx_master_ms": 319281,
+      "pump_off_master_ms": 319281,
+      "closed_receive_to_pump_off_ms": 0,
+      "serial_observation_close_to_pump_off_approx_ms": 71,
+      "serial_observation_is_physical_latency_proof": false,
+      "matched_ok_lease_ack_samples": 9,
+      "matched_ok_lease_ack_max_ms": 215,
+      "normal_compact_trace_segmented": false,
+      "final_pulses": 600,
+      "pulse_converted_ml": 102,
+      "physical_measured_ml": null,
+      "physical_net_water_mass_g": null,
+      "measuring_resolution": null,
+      "vessel_emptied_confirmed": false,
+      "target_reason": "TARGET",
+      "phase": "DONE",
+      "quiet": true,
+      "truncated": false,
+      "master_done_mask": "00000001",
+      "master_failed_mask": "00000000",
+      "master_unknown_mask": "00000000",
+      "master_slave_pulse_and_volume_agreement": true,
+      "app_result_verified": false,
+      "master_observed_tick_max_ms": 66,
+      "slave_observed_tick_max_ms": 39,
+      "acceptance_status": "FAIL_CONTROL_TICK_AND_PENDING_PHYSICAL_VOLUME_APP",
+      "counted_as_passed_baseline_batch": false
+    }
+  ],
+  "latest_idle_observation": {
+    "master_epoch": 303,
+    "master_tick_max_ms": 28,
+    "master_btc_stack_min_bytes": 2904,
+    "heap_min_bytes": 80644,
+    "mesh_stack_min_bytes": 1724,
+    "app_stack_min_bytes": 16356,
+    "device_failures": 0,
+    "reset_events": 0,
+    "capture_errors": 0,
+    "unresolved_observed_tickets": 0,
+    "observation_is_water_test": false,
+    "slave_cumulative_hello_timeout": 31,
+    "slave_cumulative_tick_max_ms": 55,
+    "slave_counters_not_attributed_to_B001": true
+  },
+  "planned_boot_observation": {
+    "status": "PASS_FIVE_SHORT_IDLE_BOOTS_ONLY",
+    "completed_cycles": 5,
+    "planned_master_resets": 5,
+    "reset_banners_observed": 5,
+    "unplanned_resets_observed": 0,
+    "observed_device_failures": 0,
+    "capture_errors": 0,
+    "firmware_build": "5939b648",
+    "effective_max_concurrent": 5,
+    "epochs": [
+      304,
+      305,
+      306,
+      307,
+      308
+    ],
+    "per_cycle": [
+      {
+        "cycle": 1,
+        "btc_stack_min_bytes": 2988,
+        "master_tick_max_ms": 27,
+        "build": "id=5939b648 protocol=4 features=01ff tracked=1 max_concurrent=5",
+        "nodes": [
+          "NODE slot=1 addr=0002 k=5880 version=1 online=1 commissioned=1 phase=DONE pulses=600 age_ms=7945"
+        ]
+      },
+      {
+        "cycle": 2,
+        "btc_stack_min_bytes": 2900,
+        "master_tick_max_ms": 28,
+        "build": "id=5939b648 protocol=4 features=01ff tracked=1 max_concurrent=5",
+        "nodes": [
+          "NODE slot=1 addr=0002 k=5880 version=1 online=1 commissioned=1 phase=DONE pulses=600 age_ms=1540"
+        ]
+      },
+      {
+        "cycle": 3,
+        "btc_stack_min_bytes": 2928,
+        "master_tick_max_ms": 28,
+        "build": "id=5939b648 protocol=4 features=01ff tracked=1 max_concurrent=5",
+        "nodes": [
+          "NODE slot=1 addr=0002 k=5880 version=1 online=1 commissioned=1 phase=DONE pulses=600 age_ms=4595"
+        ]
+      },
+      {
+        "cycle": 4,
+        "btc_stack_min_bytes": 3008,
+        "master_tick_max_ms": 40,
+        "build": "id=5939b648 protocol=4 features=01ff tracked=1 max_concurrent=5",
+        "nodes": [
+          "NODE slot=1 addr=0002 k=5880 version=1 online=1 commissioned=1 phase=DONE pulses=600 age_ms=7725"
+        ]
+      },
+      {
+        "cycle": 5,
+        "btc_stack_min_bytes": 2976,
+        "master_tick_max_ms": 27,
+        "build": "id=5939b648 protocol=4 features=01ff tracked=1 max_concurrent=5",
+        "nodes": [
+          "NODE slot=1 addr=0002 k=5880 version=1 online=1 commissioned=1 phase=DONE pulses=600 age_ms=820"
+        ]
+      }
+    ],
+    "all_cycle_end_outputs_off": true,
+    "all_cycle_end_mesh_healthy_and_empty": true,
+    "phone_ble_business_tested": false,
+    "pump_started": false,
+    "precheck_attempt_1": "Stopped before any reset: local query caught normal HELLO SAR; actual end arrived. Attempt 2 waits for actual idle within bound."
+  },
+  "capture_anomalies": [
+    {
+      "log": "v4-bench-live.jsonl",
+      "repeated_prefix_lines": 80895,
+      "repeated_text": "it=3 seg=0 err=0",
+      "cause": "UNDETERMINED",
+      "used_as_air_packet_rate": false
+    },
+    {
+      "log": "v4-btc-bench-live.jsonl",
+      "repeated_prefix_lines": 140186,
+      "repeated_text": "_stack_min_bytes=2904",
+      "received_window_approx_seconds": 7.5,
+      "cause": "UNDETERMINED",
+      "startup_completeness_claimed": false,
+      "used_as_air_packet_rate": false
+    }
+  ],
+  "hardware_matrix": [
+    {
+      "id": "H01",
+      "group": "single_lane_rotating_five_nodes",
+      "required_batches": 50,
+      "accepted_batches": 0,
+      "status": "PAUSED_AFTER_B001_TICK_LIMIT",
+      "missing_devices": 4
+    },
+    {
+      "id": "H02",
+      "group": "two_lanes_real_overlap",
+      "required_batches": 50,
+      "accepted_batches": 0,
+      "status": "NOT_RUN_INSUFFICIENT_DEVICES"
+    },
+    {
+      "id": "H03",
+      "group": "five_lanes_real_overlap_100_200_500ml",
+      "required_batches": 200,
+      "accepted_batches": 0,
+      "status": "NOT_RUN_INSUFFICIENT_DEVICES"
+    },
+    {
+      "id": "H04",
+      "group": "five_lanes_eight_wall_clock_hours",
+      "required_hours": 8,
+      "accepted_hours": 0,
+      "status": "NOT_RUN_INSUFFICIENT_DEVICES"
+    },
+    {
+      "id": "H05",
+      "group": "physical_power_ack_loss_manual_stop",
+      "required_per_fault_class": 10,
+      "status": "NOT_RUN"
+    }
+  ],
+  "unresolved_gates": [
+    "physical B001 volume/resolution and emptied-vessel confirmation",
+    "latest firmware water-task tick <=50ms including slave; old 66ms observation not waived",
+    "phone BLE pairing/reconnect/business and APP result agreement",
+    "agreed physical-volume tolerance and per-batch measurement",
+    "uniform-clock first-pulse/close latency and five-valve skew",
+    "all five-device rotating/overlap/endurance/fault groups"
+  ],
+  "volume_tolerance": {
+    "status": "PROPOSAL_NOT_PRODUCT_APPROVED",
+    "proposed_absolute_min_ml": 5,
+    "proposed_target_fraction": 0.05
+  },
+  "final_device_state": {
+    "master_epoch": 308,
+    "master_pump_command": 0,
+    "master_pwm_output": 0,
+    "master_pwm_level": 1,
+    "master_pwm_duty": 50,
+    "master_pwm_revision": 0,
+    "slave_valve_command": 0,
+    "slave_last_job": "144:75",
+    "slave_last_phase": "DONE",
+    "node_address": "0002",
+    "node_online": true,
+    "node_commissioned": true,
+    "both_mesh_healthy": true,
+    "both_mesh_pending": 0,
+    "both_mesh_in_flight": 0,
+    "serial_capture_running": false,
+    "serial_ports_released": [
+      "COM5",
+      "COM6"
+    ]
+  },
+  "preservation": {
+    "nvs_erased": false,
+    "prior_nvs_restored": false,
+    "pairing_and_calibration_preserved": true,
+    "flash_backup_bytes_each": 1179648,
+    "flash_backup_is_full_4mb": false,
+    "nvs_backup_restore_allowed": false,
+    "git_committed_this_round": false,
+    "git_pushed_this_round": false
+  },
+  "evidence": [
+    {
+      "project": "pump-muti",
+      "path": ".pio/host-v4-btc.log",
+      "sha256": "992497a38eb3a5655ce974069e64136da0a0bfd17bc322643c6f735b77134b46",
+      "raw_local_only": false
+    },
+    {
+      "project": "pump-muti",
+      "path": ".pio/sdk-v4.log",
+      "sha256": "8c16fdf9912c95ddc8cee74f8932f606b7e788f03385719f0a37934f4e8a1b35",
+      "raw_local_only": false
+    },
+    {
+      "project": "pump-muti",
+      "path": ".pio/architecture-v4-btc.log",
+      "sha256": "9954cd4db259eba06fa423da860ea8b9fbed0a8865b38c1c1d8dee63a721aea6",
+      "raw_local_only": false
+    },
+    {
+      "project": "pump-muti",
+      "path": ".pio/log-tools-v4-btc.log",
+      "sha256": "5b3420a8a856238e5f3191a2d1ff13bea2e3e4426cc2c11d37971fb5df618b62",
+      "raw_local_only": false
+    },
+    {
+      "project": "pump-muti",
+      "path": ".pio/v3-field-replay.log",
+      "sha256": "0f47b0120b9d7abea2185f08edac5620d79e6bfe5a385d0e60ec302c64f71781",
+      "raw_local_only": false
+    },
+    {
+      "project": "pump-muti-slave",
+      "path": ".pio/host-v4.log",
+      "sha256": "77e7b8ffe3f65c4fdcf05a990edc16d58b2bc5dd8a836e7717ce6e831f4dfdfb",
+      "raw_local_only": false
+    },
+    {
+      "project": "pumpmutiapp",
+      "path": "v4-tests.log",
+      "sha256": "55fac1036aaa28428611b96c2a7fea9e9832756ee4e7c3a42a2bd988b4d05de0",
+      "raw_local_only": false
+    },
+    {
+      "project": "pump-muti",
+      "path": ".pio/diagnostics/v4-bench-live.jsonl",
+      "sha256": "df4f2058f999cba9cef7511ebd0381f280c36b1dd3e199cc08370bf89796aa9d",
+      "raw_local_only": true
+    },
+    {
+      "project": "pump-muti",
+      "path": ".pio/diagnostics/v4-bench-analysis.json",
+      "sha256": "bff2398c6a431f3ee60ed523e339e0def3832bf4bfa1e79cf0fa31c218042580",
+      "raw_local_only": false
+    },
+    {
+      "project": "pump-muti",
+      "path": ".pio/diagnostics/v4-console-bench-live.jsonl",
+      "sha256": "679451a2a74aaf422c58cf5c2ff93528f21b8ce06a0a86574df87fc730e7eeb5",
+      "raw_local_only": true
+    },
+    {
+      "project": "pump-muti",
+      "path": ".pio/diagnostics/v4-console-bench-analysis.json",
+      "sha256": "cfb3cc3fbc163700d0927830a577851ecdd249f8c23206cfad52ef22e4f3365e",
+      "raw_local_only": false
+    },
+    {
+      "project": "pump-muti",
+      "path": ".pio/diagnostics/v4-btc-bench-live.jsonl",
+      "sha256": "de5aee4dd1ea958ba756717ddbc0d5499b0f5ce08cf526709372bb5651495ebc",
+      "raw_local_only": true
+    },
+    {
+      "project": "pump-muti",
+      "path": ".pio/diagnostics/v4-btc-bench-analysis.json",
+      "sha256": "ed9b51086c77b241c56b105db63db061c7f042d3841e8c9e5f19c09087c8ef88",
+      "raw_local_only": false
+    },
+    {
+      "project": "pump-muti",
+      "path": ".pio/diagnostics/v4-btc-boot-check-2-live.jsonl",
+      "sha256": "57412a160f2d4f58bd7e0d4d99a5a56fd51e252ab09962c268018781d14bf276",
+      "raw_local_only": true
+    },
+    {
+      "project": "pump-muti",
+      "path": ".pio/diagnostics/v4-btc-boot-check-2-summary.json",
+      "sha256": "a6fb014aa53e19c5a691f3c1c56fb7d1b4eb35ce46276ec27727c9c6335439da",
+      "raw_local_only": false
+    },
+    {
+      "project": "pump-muti",
+      "path": ".pio/diagnostics/v4-btc-boot-check-2-analysis.json",
+      "sha256": "5b4c0c8d7409b750d64a05ae37412243a71d955f17ac3f70d6a3351fec67190b",
+      "raw_local_only": false
+    },
+    {
+      "project": "pump-muti",
+      "path": ".pio/diagnostics/v4-btc-upload-master.log",
+      "sha256": "fa2fea30ccdf799a5c7cbffaf4951c604935fdd266e5b9ee06a6ab9e299d1feb",
+      "raw_local_only": false
+    }
+  ]
+}
