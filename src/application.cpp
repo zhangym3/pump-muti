@@ -10,11 +10,12 @@
 
 namespace pump {
 namespace {
-bool decodeStatus(const Packet &p, ValveStatus &s) {
+bool decodeResult(const Packet &p, ValveStatus &s) {
   Reader r{p}; s.key = r.key(); s.pulses = r.u32(); s.closePulses = r.u32(); s.k = r.u32(); s.revision = r.u32();
   s.phase = Phase(r.u8()); s.reason = Reason(r.u8()); const auto flags = r.u8();
   s.valveCommand = flags & 1; s.quiet = flags & 2; s.truncated = flags & 4;
-  return r.done() && s.phase <= Phase::Fault && s.reason <= Reason::Protocol && !(flags & ~7) && validK(s.k);
+  return r.done() && s.key.valid() && (s.phase == Phase::Done || s.phase == Phase::Fault) &&
+    s.reason <= Reason::Protocol && !(flags & ~7) && !s.valveCommand && validK(s.k);
 }
 }
 bool Application::idle() const {
@@ -100,7 +101,7 @@ void Application::requeryUnknown(uint32_t now) {
     if (!(resultQueryMask_ & bit) || !(report.unknown & bit) || !scheduler_.node(i).config.address) {
       ++resultQueryCursor_; continue;
     }
-    auto query = packet(Op::StatusGet, scheduler_.node(i).config.address);
+    auto query = packet(Op::ResultQuery, scheduler_.node(i).config.address);
     Writer writer{query}; writer.key(resultQueryKey_);
     if (mesh_.send(query)) { ++resultQueryCursor_; resultQueryAt_ = now; }
     return;
@@ -162,7 +163,8 @@ void Application::incoming(const Packet &p, uint32_t now) {
   if (scheduler_.find(p.peer) < 0) {
     if (p.op != Op::Hello || !mesh_.ownsSlave(p.peer) || !idle() || !storageHealthy_) return;
     Reader hello{p}; const uint32_t k=hello.u32(), version=hello.u32(); const auto configured=hello.u8();
-    if (!hello.done() || !validK(k) || !version || configured>1) return;
+    const uint32_t buildId=hello.u32();
+    if (!hello.done() || !validK(k) || !version || configured>1 || !buildId) return;
     int slot=-1; for (size_t i=0;i<MaxNodes;++i) if (!store_.state().nodes[i].address) { slot=int(i); break; }
     if (slot<0) return;
     auto next=store_.state(); next.nodes[slot]={p.peer,k,version};
@@ -171,15 +173,16 @@ void Application::incoming(const Packet &p, uint32_t now) {
   }
   if (p.op == Op::Hello) {
     const uint32_t k = r.u32(), version = r.u32(); const bool commissioned = r.u8() == 1;
-    if (!r.done()) return;
+    const uint32_t buildId = r.u32();
+    if (!r.done() || !buildId) return;
     const auto &previous = scheduler_.node(scheduler_.find(p.peer));
     const bool recover = !previous.seen || elapsed(now,previous.seenAt,15000) || store_.state().lastJob.unknown;
-    scheduler_.hello(p.peer, k, version, commissioned, now);
+    scheduler_.hello(p.peer, k, version, commissioned, now, buildId);
     if (validK(k) && version) mesh_.slaveHello(p.peer);
     auto reply = packet(Op::HelloReply, p.peer); Writer w{reply}; w.u32(store_.state().epoch);
     w.u8(uint8_t(pump_.fault())); w.u8(uint8_t(scheduler_.report().phase)); mesh_.send(reply);
     // Read saved results after a reboot without reissuing PREPARE/START.
-    if (recover && !scheduler_.active()) { auto query = packet(Op::StatusGet, p.peer); Writer qw{query}; qw.key({}); mesh_.send(query); }
+    if (recover && !scheduler_.active()) { auto query = packet(Op::ResultQuery, p.peer); Writer qw{query}; qw.key({}); mesh_.send(query); }
   } else if (p.op == Op::Capabilities) {
     const uint32_t nonce=r.u32(); const uint16_t revision=r.u16(), features=r.u16(); const uint32_t build=r.u32();
     if (r.done()) {
@@ -198,7 +201,7 @@ void Application::incoming(const Packet &p, uint32_t now) {
         (unsigned long)now,p.peer,(unsigned long)key.epoch,(unsigned long)key.id,(unsigned long)sequence,
         replyName(Reply(rawReply)),matched,(unsigned long)issued,(unsigned long)(matched?now-issued:0),applied);
     }
-  } else if (p.op == Op::CommandReply) {
+  } else if (p.op == Op::CommandAck) {
     const JobKey key = r.key(); const uint8_t rawCommand = r.u8(), rawReply = r.u8();
     if (r.done() && (rawCommand == uint8_t(Op::Prepare) || rawCommand == uint8_t(Op::Start)) &&
         rawReply <= uint8_t(Reply::Unknown))
@@ -214,9 +217,9 @@ void Application::incoming(const Packet &p, uint32_t now) {
     if (result == Reply::Ok) mesh_.slaveHello(p.peer);
     commissionResult(request, commission_.slot, p.peer, result, configured == 1);
     commission_.active = false;
-  } else if (p.op == Op::Status) {
-    ValveStatus s; if (!decodeStatus(p, s)) return;
-    scheduler_.status(p.peer, s, now);
+  } else if (p.op == Op::Result) {
+    ValveStatus s; if (!decodeResult(p, s)) return;
+    if (!scheduler_.result(p.peer, s, now)) return;
     const int slot = scheduler_.find(p.peer); const uint32_t bit = uint32_t(1) << slot;
     const auto &current = scheduler_.node(slot).status;
     const auto &report = scheduler_.report();
@@ -237,17 +240,9 @@ void Application::incoming(const Packet &p, uint32_t now) {
         }
       }
     }
-    auto ack = packet(Op::EventAck, p.peer); Writer w{ack}; w.key(s.key); w.u32(s.revision); mesh_.send(ack);
+    auto ack = packet(Op::ResultAck, p.peer); Writer w{ack}; w.key(s.key); w.u32(s.revision); mesh_.send(ack);
   } else if (p.op == Op::Request) {
     ControlRequest q; if (decodeRequest(p, q)) request(q, p.peer, now);
-  } else if (p.op == Op::Summary) {
-    const JobKey key = r.key(); const uint32_t pulses = r.u32(), revision = r.u32();
-    const Phase phase = Phase(r.u8()); const auto flags = r.u8();
-    if (!r.done() || phase > Phase::Fault || flags > 1) return;
-    const int i = scheduler_.find(p.peer); const auto &s = scheduler_.node(i).status;
-    if (key.valid() && scheduler_.summary(p.peer, key, pulses, revision, now)) {
-      publishFlow(p.peer, key, pulses, s.k, phase, s.reason, revision, false);
-    }
   }
 }
 void Application::localState(uint32_t now) {
@@ -605,9 +600,9 @@ void Application::run() {
     if (interval>maxTick) maxTick=interval;
     if (elapsed(now,diagnosticAt,10000)) {
       const auto m=mesh_.metrics(); diagnosticAt=now;
-      ESP_LOGI("mesh_diag", "healthy=%u submitted=%lu ended=%lu merged=%lu expired=%lu faults=%lu peak_sar=%u peak_pending=%u sar_max_ms=%lu tick_max_ms=%lu trace_lost=%lu",
+      ESP_LOGI("mesh_diag", "healthy=%u submitted=%lu ended=%lu merged=%lu expired=%lu faults=%lu hello_timeout=%lu peak_sar=%u peak_pending=%u sar_max_ms=%lu tick_max_ms=%lu trace_lost=%lu",
         mesh_.healthy(),(unsigned long)m.submitted,(unsigned long)m.ended,(unsigned long)m.merged,(unsigned long)m.expired,
-        (unsigned long)m.faults,m.peakSar,m.peakPending,(unsigned long)m.maxSarMs,(unsigned long)maxTick,(unsigned long)m.traceLost);
+        (unsigned long)m.faults,(unsigned long)m.helloTimeouts,m.peakSar,m.peakPending,(unsigned long)m.maxSarMs,(unsigned long)maxTick,(unsigned long)m.traceLost);
       publishMeshDiagnostics(mesh_.diagnostics(),mesh_.healthy(),[](const char *line) { ESP_LOGI("mesh_state","%s",line); });
     }
     mesh_.managementTick(now); inventoryTick(now);

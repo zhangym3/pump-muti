@@ -1,5 +1,6 @@
 .pio
 .mesh-sdk/
+.mesh-sdk.*-backup-*/
 .vscode
 dist
 __pycache__

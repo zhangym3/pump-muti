@@ -23,17 +23,17 @@ MeshTransport *instance = nullptr;
 uint8_t uuid[16] = {0xDD, 0xDD, 0x50, 0x4D};
 esp_ble_mesh_cfg_srv_t config;
 esp_ble_mesh_model_op_t operations[] = {
-  {ESP_BLE_MESH_MODEL_OP_3(0xC0, CompanyId), 28, 0},
+  {ESP_BLE_MESH_MODEL_OP_3(0xC0, CompanyId), 35, 0},
   {ESP_BLE_MESH_MODEL_OP_3(0xC1, CompanyId), 8, 0},
   {ESP_BLE_MESH_MODEL_OP_3(0xC2, CompanyId), 12, 0},
   {ESP_BLE_MESH_MODEL_OP_3(0xC3, CompanyId), 9, 0},
   {ESP_BLE_MESH_MODEL_OP_3(0xC4, CompanyId), 8, 0},
   {ESP_BLE_MESH_MODEL_OP_3(0xC5, CompanyId), 27, 0},
-  {ESP_BLE_MESH_MODEL_OP_3(0xC6, CompanyId), 18, 0},
+  {ESP_BLE_MESH_MODEL_OP_3(0xC6, CompanyId), 0, 0},
   {ESP_BLE_MESH_MODEL_OP_3(0xC7, CompanyId), 12, 0},
   {ESP_BLE_MESH_MODEL_OP_3(0xC8, CompanyId), 37, 0},
   {ESP_BLE_MESH_MODEL_OP_3(0xC9, CompanyId), 46, 0},
-  {ESP_BLE_MESH_MODEL_OP_3(0xCA, CompanyId), 9, 0},
+  {ESP_BLE_MESH_MODEL_OP_3(0xCA, CompanyId), 13, 0},
   {ESP_BLE_MESH_MODEL_OP_3(0xCB, CompanyId), 6, 0},
   {ESP_BLE_MESH_MODEL_OP_3(0xCC, CompanyId), 4, 0},
   {ESP_BLE_MESH_MODEL_OP_3(0xCD, CompanyId), 14, 0},
@@ -68,7 +68,7 @@ void modelCb(esp_ble_mesh_model_cb_event_t event, esp_ble_mesh_model_cb_param_t 
 }
 bool urgent(const Packet &p) {
   return p.op == Op::Close || p.op == Op::Lease || p.op == Op::LeaseAck ||
-    p.op == Op::CommandReply ||
+    p.op == Op::Result || p.op == Op::ResultAck || p.op == Op::CommandAck ||
     (p.op == Op::Request && p.size && p.bytes[0] == uint8_t(Action::Stop));
 }
 }
@@ -152,8 +152,8 @@ extern "C" void esp_ble_mesh_tracked_send_event(uint32_t ticket, uint8_t event, 
 }
 void MeshTransport::incoming(const Packet &p) {
   // Master receives remote state and forwarded requests; peer authorization is checked by Application.
-  if (p.op != Op::Hello && p.op != Op::Status && p.op != Op::Summary && p.op != Op::Request &&
-      p.op != Op::CommissionReply && p.op != Op::LeaseAck && p.op != Op::CommandReply && p.op != Op::Capabilities) return;
+  if (p.op != Op::Hello && p.op != Op::Result && p.op != Op::Request &&
+      p.op != Op::CommissionReply && p.op != Op::LeaseAck && p.op != Op::CommandAck && p.op != Op::Capabilities) return;
   if (xQueueSend(urgent(p) ? urgentRx_ : rx_, &p, 0) != pdTRUE && urgent(p)) overflow_ = true;
 }
 bool MeshTransport::receive(Packet &p) {

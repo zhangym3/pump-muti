@@ -15,7 +15,8 @@ typedef int esp_ble_mesh_dev_role_t;
 enum { ESP_OK, ESP_ERR_INVALID_ARG, ESP_ERR_NO_MEM, ESP_FAIL };
 enum { BTC_BLE_MESH_ACT_MODEL_PUBLISH, BTC_BLE_MESH_ACT_SERVER_MODEL_SEND,
        BTC_BLE_MESH_ACT_CLIENT_MODEL_SEND, BTC_BLE_MESH_ACT_SERVER_MODEL_UPDATE_STATE };
-enum { ESP_BLE_MESH_TRACKED_ACCEPTED = 1, ESP_BLE_MESH_TRACKED_REJECTED, ESP_BLE_MESH_TRACKED_SAR_ENDED };
+enum { ESP_BLE_MESH_TRACKED_ACCEPTED = 1, ESP_BLE_MESH_TRACKED_REJECTED,
+       ESP_BLE_MESH_TRACKED_SAR_ENDED, ESP_BLE_MESH_TRACKED_SAR_TIMEOUT };
 #define BTC_SIG_API_CALL 1
 #define BTC_PID_MODEL 2
 #define ROLE_NODE 0
@@ -128,7 +129,16 @@ static int send_tracked(uint32_t ticket) {
     return esp_ble_mesh_server_model_send_msg_tracked(&model,&context,0xc10001,sizeof(payload),payload,ticket);
 }
 static void event(unsigned i,uint32_t ticket,uint8_t type,int error) {
-    assert(i<event_count && events[i].ticket==ticket && events[i].type==type && events[i].error==error);
+    if (i>=event_count || events[i].ticket!=ticket || events[i].type!=type || events[i].error!=error) {
+        if (i<event_count) {
+            fprintf(stderr, "event[%u] expected ticket=%u type=%u error=%d, got ticket=%u type=%u error=%d (count=%u)\n",
+                    i, ticket, type, error, events[i].ticket, events[i].type, events[i].error, event_count);
+        } else {
+            fprintf(stderr, "event[%u] expected ticket=%u type=%u error=%d, got count=%u\n",
+                    i, ticket, type, error, event_count);
+        }
+        assert(0);
+    }
 }
 
 int main(void) {
@@ -159,7 +169,10 @@ int main(void) {
     reset(); early_end=true; assert(send_tracked(UINT32_MAX)==ESP_OK); deliver();
     event(0,UINT32_MAX,ESP_BLE_MESH_TRACKED_SAR_ENDED,0); event(1,UINT32_MAX,ESP_BLE_MESH_TRACKED_ACCEPTED,0);
     reset(); assert(send_tracked(21)==ESP_OK); deliver(); seg_tx_complete(&seg_tx[0],-ETIMEDOUT);
-    event(1,21,ESP_BLE_MESH_TRACKED_SAR_ENDED,-ETIMEDOUT);
+    event(1,21,ESP_BLE_MESH_TRACKED_SAR_TIMEOUT,-ETIMEDOUT);
+    reset(); assert(send_tracked(22)==ESP_OK); deliver(); seg_tx_complete(&seg_tx[0],-EIO);
+    assert(event_count==2); event(0,22,ESP_BLE_MESH_TRACKED_ACCEPTED,0);
+    event(1,22,ESP_BLE_MESH_TRACKED_SAR_ENDED,-EIO);
     puts("PASS extracted SDK true end/duplicate complete/end-before-accepted/timeout/ticket UINT32_MAX");
 
     reset(); assert(send_tracked(22)==ESP_OK); deliver(); bt_mesh_tx_reset(); assert(event_count==1 && !seg_tx[0].cb);

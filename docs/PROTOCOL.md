@@ -1,4 +1,4 @@
-# 协议 V1
+# 协议 V3
 
 Bluetooth Mesh Vendor CID `0x02E5`、Model ID `0x0001`，群组 `0xC001`。固定使用 NetKey index 0 / AppKey index 0。所有多字节字段显式小端，禁止直接发送 C++ 内存结构。
 
@@ -6,23 +6,29 @@ Bluetooth Mesh Vendor CID `0x02E5`、Model ID `0x0001`，群组 `0xC001`。固�
 
 | Op | 方向 | 载荷，按顺序 | 字节 |
 | --- | --- | --- | --- |
-| C0 PREPARE | 主→从，单播 | key, ml:u32, targetPulses:u32, k:u32, version:u32, maxMs:u32 | 28 |
+| C0 PREPARE | 主→从，单播 | key, ml:u32, targetPulses:u32, k:u32, version:u32, maxMs:u32, speedFactorPermille:u16, leaseMs:u32, flags:u8 | 35 |
 | C1 START | 主→从，单播 | key | 8 |
-| C2 LEASE | 主→从，群组 | key, sequence:u32 | 12 |
-| C3 CLOSE | 主→从，群组 | key, reason:u8 | 9 |
-| C4 STATUS_GET | 主→从，单播 | key，零值表示查询当前/最近任务 | 8 |
-| C5 STATUS | 从→主 | key, pulses:u32, closePulses:u32, k:u32, revision:u32, phase:u8, reason:u8, flags:u8 | 27 |
-| C6 SUMMARY | 从→主 | key, pulses:u32, revision:u32, phase:u8, valveCommand:u8 | 18 |
-| C7 EVENT_ACK | 主→从 | key, revision:u32 | 12 |
+| C2 LEASE | 主→从，单播 | key, sequence:u32 | 12 |
+| C3 CLOSE | 主→从，单播 | key, reason:u8 | 9 |
+| C4 RESULT_QUERY | 主→从，单播 | key，零值表示查询最近已保存结果 | 8 |
+| C5 RESULT | 从→主，单播 | key, pulses:u32, closePulses:u32, k:u32, revision:u32, phase:u8, reason:u8, flags:u8 | 27 |
+| C6 保留 | 不发送 | 兼容旧 opcode 编号；SUMMARY 已删除 | - |
+| C7 RESULT_ACK | 主→从，单播 | key, revision:u32 | 12 |
 | C8 REQUEST | 入口→主 | action:u8, epoch:u32, client:u64, sequence:u32, mask:u32, ml:u32, maxMs:u32, stopKey | 37 |
 | C8 REQUEST 单独设置 | 入口→主 | action=1:u8, epoch:u32, client:u64, sequence:u32, mask:u32, ml=0:u32, maxMs:u32, amounts:32 bytes | 61 |
-| C9 RESPONSE | 主→入口 | client:u64, sequence:u32, reply:u8, key, schedulePhase:u8, selected:u32, complete:u32, failed:u32, unknown:u32, totalMl:u32, measured:u32 | 46 |
-| CA HELLO | 从→主 | k:u32, version:u32, commissioned:u8 | 9 |
+| C9 RESPONSE | 主→入口 | client:u64, sequence:u32, reply:u8, key, schedulePhase:u8, selected:u32, complete:u32, failed:u32, unknown:u32, totalMl:u32, measured:u32, reason:u8 | 47 |
+| CA HELLO | 从→主 | k:u32, version:u32, commissioned:u8, buildId:u32 | 13 |
 | CB HELLO_REPLY | 主→从 | epoch:u32, pumpFault:u8, schedulePhase:u8 | 6 |
+| CC COMMISSION | 主→从，单播 | request:u32 | 4 |
+| CD COMMISSION_REPLY | 从→主，单播 | request:u32, reply:u8, commissioned:u8, k:u32, version:u32 | 14 |
+| CE LEASE_ACK | 从→主，单播 | key, sequence:u32, reply:u8 | 13 |
+| CF COMMAND_ACK | 从→主，单播 | key, command:u8, reply:u8 | 10 |
+| D0 CAPABILITIES_GET | 主→从，单播 | nonce:u32 | 4 |
+| D1 CAPABILITIES | 从→主，单播 | nonce:u32, revision:u16, features:u16, buildId:u32 | 12 |
 
-业务载荷之外还有 opcode、MIC 和 Mesh 层开销，大部分消息会分段。18 字节摘要也不是一个空口包。配置提供 16 个 RX 分段上下文、8 个 TX 上下文；它们不构成 32 节点吞吐保证。
+业务载荷之外还有 opcode、MIC 和 Mesh 层开销；业务载荷超过 8 字节时由当前传输层按分段报文处理。配置提供 16 个 RX 分段上下文、8 个 TX 上下文；它们不构成 32 节点吞吐保证。C6 不再发送任何周期流量摘要。
 
-状态枚举顺序由 `include/protocol.h` 定义：`Idle, Prepared, Opening, Running, Settling, Done, Fault`。STATUS flags：bit0=阀门输出命令，bit1=已满足静默窗口，bit2=结算截断。任务内 revision 随状态变化递增，普通周期脉冲增长不增加 revision。SUMMARY 只有任务及 revision 与详细状态一致且脉冲不回退时才进入流量缓存，不推进调度和保护状态。
+从机阶段枚举顺序由 `include/protocol.h` 定义：`Idle, Prepared, Opening, Running, Settling, Done, Fault`。RESULT 的 phase 只能是 `Done` 或 `Fault`；bit0=阀门输出命令、bit1=已满足静默窗口、bit2=结算截断。主机只接受阀门输出已关闭且未知 flag 未置位的终态。revision 随状态变化递增；普通脉冲计数变化不增加 revision。主机按 `JobKey + revision` 去重并回传 RESULT_ACK。
 
 从节点每次启动在 NVS 为 revision 预留新的 16 个计数值，每项任务最多使用 5 次状态变化。恢复的终态也改用本次启动的 revision；因此重启后的故障状态不会被重启前更高阶段的旧报文覆盖。计数耗尽则保持输出关闭。空闲时修改 K 不修改已完成任务保存的 K，历史毫升数仍按执行当时的系数解释。
 
@@ -32,11 +38,13 @@ Bluetooth Mesh Vendor CID `0x02E5`、Model ID `0x0001`，群组 `0xC001`。固�
 
 ## 重试与关闭
 
-PREPARE / START 按每 150ms 一个未确认节点轮询，分别有 10s / 4s 的阶段上限。默认每批 1 个节点，不应直接把并发改成 32 而沿用这些阶段时限。群组租约每 1s 更新，从节点 3s 未收到新的序号就本地关阀；重复 START 和重复租约不会延长授权。
+能力缓存有效时不逐批探测；节点离线、build ID 变化或主机重启后需重新单播 CAPABILITIES_GET。能力探测必须在 PREPARE/START 前完成。从机每 10 秒发送一次 HELLO 在线心跳，主机回复 HELLO_REPLY；离线恢复或主机有未决结果时可触发按需 RESULT_QUERY。HELLO 不包含流量遥测。
 
-停止先本地断泵，再发 CLOSE；取消期间每 700ms 重发关闭，未取得终态则每 300ms 补查一个节点，最多等待 10s。关闭命令如果先于 PREPARE 到达，会在空闲从节点持久化取消栅栏，后来的 PREPARE / START 无法复活该任务。终态缺失标记 UNKNOWN，不自动重新出水。
+PREPARE / START 按未确认节点轮询，准备阶段和打开阶段上限分别为 10s / 4s。生产 `MaxConcurrent=1`；增加并发前必须重新验证阶段时限和无线负载。开始供水前，主机等待每个已启动节点的新鲜 LEASE_ACK，之后按单播地址续租；从机只接受同任务的更新序号，重复序号可确认但不延长租期，过期租约不能被迟到报文复活。PREPARE 中的 `leaseMs` 默认 12000 ms，单调时钟到期或达到 `maxMs` 都会使从机本地关阀。
 
-从节点状态事件最多重试 6 次，重试间隔按地址错开；活动摘要每 2s 发送，Hello 每 10s。主节点对 Hello 补查当前结果，因此有限事件重试结束后仍可通过查询对账。Close、Lease、Stop 控制请求使用独立高优先级队列；关键队列溢出触发本地安全停止。
+停止先本地断泵，再向本批未完成节点单播 CLOSE；取消期间每 700ms 重发关闭，未取得终态则每 300ms 补查一个节点，最多等待 10s。终态缺失标记 UNKNOWN，不自动重新出水。
+
+从节点终态 RESULT 最多尝试 6 次，按地址错开发送；未确认的已保存终态可在后续 HELLO/恢复查询时重新上报。正常运行期间不发送 SUMMARY 或 STATUS。CLOSE、LEASE、RESULT、ACK 和停止请求使用高优先级关键队列；关键队列溢出或分段发送异常会触发本地安全停止。
 
 已配网节点重启直接恢复 Mesh 配置，不重新启用待配网过程。固定主地址检查、AppKey 绑定和注册表共同限制业务来源。全部节点均为受信任设备；本协议不防御已掌握网络密钥且运行恶意固件的内部节点伪造主地址。
 

@@ -17,7 +17,8 @@ struct NodeRuntime {
   uint32_t telemetryPulses = 0, telemetryAt = 0;
   bool telemetrySeen = false, leaseAckSeen = false;
   bool seen = false, commissioned = false;
-  uint32_t commandAt = 0, leaseAt = 0, openedAt = 0, buildId = 0;
+  uint32_t commandAt = 0, leaseAt = 0, openedAt = 0, buildId = 0, helloBuildId = 0;
+  uint16_t capabilityRevision = 0, capabilityFeatures = 0;
   uint8_t attempts = 0, leaseCursor = 0;
   bool commandPending = false, leasePending = false, commandSent = false, leaseSent = false;
   bool capable = false;
@@ -48,10 +49,12 @@ class MasterScheduler {
   void begin(JobKey key, uint32_t mask, uint32_t ml, uint32_t maxMs, uint32_t now, const uint8_t *amounts = nullptr);
   void stop(Reason reason, uint32_t now);
   void tick(uint32_t now);
-  void hello(uint16_t source, uint32_t k, uint32_t version, bool commissioned, uint32_t now);
+  void hello(uint16_t source, uint32_t k, uint32_t version, bool commissioned, uint32_t now,
+             uint32_t buildId = 0);
   void status(uint16_t source, const ValveStatus &s, uint32_t now);
   bool leaseAck(uint16_t source, JobKey key, uint32_t sequence, Reply result, uint32_t now);
   bool commandReply(uint16_t source, JobKey key, Op command, Reply result, uint32_t now);
+  bool result(uint16_t source, const ValveStatus &s, uint32_t now);
   bool summary(uint16_t source, JobKey key, uint32_t pulses, uint32_t revision, uint32_t now);
   bool capabilities(uint16_t source, uint32_t nonce, uint16_t revision, uint16_t features, uint32_t buildId, uint32_t now);
   void submissions(uint32_t now);
@@ -82,5 +85,5 @@ class MasterScheduler {
   uint32_t capNonce_ = 0, bootstrapAt_ = 0;
   bool preflight_ = false, bootstrap_ = false;
 };
-constexpr uint32_t LeaseAckTimeoutMs = 2400;
+constexpr uint32_t LeaseAckTimeoutMs = 8000;
 }

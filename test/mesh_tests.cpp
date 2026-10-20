@@ -16,6 +16,9 @@ Packet keyed(Op op,uint16_t peer,JobKey job={1,1},uint32_t seq=1) {
   if (op==Op::Close) w.u8(uint8_t(Reason::Manual));
   return p;
 }
+Packet helloPacket(uint16_t peer) {
+  auto p=packet(Op::Hello,peer); Writer w{p}; w.u32(5880); w.u32(1); w.u8(1); w.u32(0); return p;
+}
 void drain(MeshTxGovernor &g,uint32_t now) { MeshSubmission r; while(g.collect(now,r)) {} }
 void governor_matrix() {
   for (unsigned order=0;order<2;++order) {
@@ -34,6 +37,24 @@ void governor_matrix() {
     CHECK(g.enqueue(keyed(Op::Lease,2),100) && g.next(100,d));
     g.event(d.ticket,2,error,101); drain(g,101);
     CHECK(!g.healthy() && g.inFlight()==0 && g.metrics().faults==1);
+  }
+  {
+    MeshTxGovernor g; MeshTxGovernor::Dispatch d;
+    CHECK(g.enqueue(helloPacket(2),100) && g.next(100,d));
+    g.event(d.ticket,4,-ETIMEDOUT,110);
+    CHECK(g.healthy() && g.metrics().helloTimeouts==1 && g.metrics().faults==0);
+    g.event(d.ticket,1,0,111); drain(g,111);
+    CHECK(g.healthy() && g.inFlight()==0 && g.enqueue(helloPacket(2),112));
+    CHECK(g.next(112,d)); g.event(d.ticket,1,0,113); g.event(d.ticket,3,0,120); drain(g,120);
+    CHECK(g.healthy() && g.inFlight()==0 && g.metrics().helloTimeouts==1);
+  }
+  for (const auto scenario : {std::pair<Op,int>{Op::Lease,-ETIMEDOUT},
+                              std::pair<Op,int>{Op::Hello,-EIO}}) {
+    MeshTxGovernor g; MeshTxGovernor::Dispatch d;
+    const auto p=scenario.first==Op::Hello ? helloPacket(2) : keyed(scenario.first,2);
+    CHECK(g.enqueue(p,100) && g.next(100,d));
+    g.event(d.ticket,4,scenario.second,110); g.event(d.ticket,1,0,111); drain(g,111);
+    CHECK(!g.healthy() && g.metrics().helloTimeouts==0 && g.metrics().faults==1);
   }
   for (bool accepted:{false,true}) {
     MeshTxGovernor g; MeshTxGovernor::Dispatch d;
@@ -72,18 +93,18 @@ void governor_matrix() {
   {
     MeshTxGovernor g; MeshTxGovernor::Dispatch d;
     CHECK(g.enqueue(keyed(Op::Lease,2),100));
-    for(uint32_t t=110;t<800;t+=10) CHECK(g.enqueue(keyed(Op::Lease,2),t));
-    CHECK(g.queued()==1 && !g.next(900,d) && !g.healthy()); // merge never slides deadline
+    for(uint32_t t=110;t<8000;t+=10) CHECK(g.enqueue(keyed(Op::Lease,2),t));
+    CHECK(g.queued()==1 && !g.next(8100,d) && !g.healthy()); // merge never slides deadline
   }
   {
     MeshTxGovernor g; MeshTxGovernor::Dispatch d;
-    auto p=packet(Op::Status,1); Writer w{p}; w.key({1,1}); w.u32(4); w.u32(0); w.u32(5880); w.u32(2); w.u8(2); w.u8(0); w.u8(1);
+    auto p=packet(Op::Result,1); Writer w{p}; w.key({1,1}); w.u32(4); w.u32(0); w.u32(5880); w.u32(2); w.u8(uint8_t(Phase::Done)); w.u8(uint8_t(Reason::Target)); w.u8(2);
     CHECK(g.enqueue(p,100)); p.bytes[8]=7; CHECK(g.enqueue(p,110));
-    p.bytes[20]=3; p.bytes[24]=uint8_t(Phase::Fault); CHECK(g.enqueue(p,120));
+    p.bytes[20]=3; p.bytes[24]=uint8_t(Phase::Fault); p.bytes[25]=uint8_t(Reason::Transport); CHECK(g.enqueue(p,120));
     CHECK(g.queued()==1 && g.next(121,d) && d.packet.bytes[20]==3 && d.packet.bytes[24]==uint8_t(Phase::Fault));
   }
   {
-    MeshTxGovernor g; auto p=keyed(Op::Summary,2);
+    MeshTxGovernor g; auto p=packet(Op::CapabilitiesGet,2); Writer w{p}; w.u32(1);
     for(unsigned i=0;i<48;++i) { p.peer=uint16_t(i+2); CHECK(g.enqueue(p,0)); }
     p.peer=99; CHECK(!g.enqueue(p,0) && g.healthy());
     for(unsigned i=0;i<16;++i) CHECK(g.enqueue(keyed(Op::Start,uint16_t(100+i)),0));
@@ -105,10 +126,11 @@ struct IO : ValveIO {
   bool interlock() override{return true;} bool saveFence(JobKey k) override{fence=k;return true;}
 };
 Packet heartbeat() {
-  auto p=packet(Op::Hello,1); Writer w{p}; w.u32(5880); w.u32(1); w.u8(1); return p;
+  auto p=packet(Op::Hello,1); Writer w{p}; w.u32(5880); w.u32(1); w.u8(1);
+  w.u32(ApprovedSlaveBuildIds[0]); return p;
 }
 Packet terminal(JobKey key={1,1}) {
-  auto p=packet(Op::Status,1); Writer w{p}; w.key(key); w.u32(12); w.u32(12);
+  auto p=packet(Op::Result,1); Writer w{p}; w.key(key); w.u32(12); w.u32(12);
   w.u32(5880); w.u32(3); w.u8(uint8_t(Phase::Fault)); w.u8(uint8_t(Reason::Transport)); w.u8(2);
   return p;
 }
@@ -132,7 +154,7 @@ void governor_recovery_matrix() {
     if(!rejected && endFirst) g.event(d.ticket,1,0,130);
     drain(g,140);
     const auto fault=g.diagnostics(at+1000).first;
-    CHECK(g.inFlight()==0 && fault.ticket==d.ticket && fault.packet.op==Op::Status);
+    CHECK(g.inFlight()==0 && fault.ticket==d.ticket && fault.packet.op==Op::Result);
     CHECK(fault.reason==(rejected?ReasonT::Rejected:ReasonT::SarEnd));
     CHECK(fault.at==at && fault.issuedAt==100 && fault.inFlight==1 && fault.pending==2);
     CHECK(!g.enqueue(keyed(Op::Start,2,{1,2}),at+1000));
@@ -143,7 +165,7 @@ void governor_recovery_matrix() {
     CHECK(g.next(at+1000,next) && next.packet.op==Op::Hello && next.ticket>d.ticket);
     CHECK(!g.next(at+1001,d)); // exactly one recovery transmission at a time
     g.event(next.ticket,1,0,at+1001); g.event(next.ticket,3,0,at+1010); drain(g,at+1010);
-    CHECK(g.next(at+1011,next) && next.packet.op==Op::Status && !(next.packet.bytes[26]&1));
+    CHECK(g.next(at+1011,next) && next.packet.op==Op::Result && !(next.packet.bytes[26]&1));
     g.event(next.ticket,1,0,at+1012); g.event(next.ticket,3,0,at+1020); drain(g,at+1020);
     CHECK(!g.healthy() && g.inFlight()==0 && g.queued()==0 && g.metrics().faults==1);
     std::vector<std::string> lines;
@@ -152,15 +174,13 @@ void governor_recovery_matrix() {
     CHECK(g.diagnostics(at+1020).first.ticket==fault.ticket);
   }
   {
-    MeshTxGovernor g{1}; MeshTxGovernor::Dispatch d,blocked;
-    CHECK(g.enqueue(terminal(),100) && g.next(100,d)); g.event(d.ticket,1,0,101); drain(g,101);
+    MeshTxGovernor g{1}; MeshTxGovernor::Dispatch d;
     CHECK(g.enqueue(keyed(Op::LeaseAck,1),110));
-    CHECK(!g.next(910,blocked) && !g.healthy());
-    CHECK(g.diagnostics(1910).first.reason==ReasonT::QueueExpired && g.inFlight()==1);
-    CHECK(!g.enqueue(heartbeat(),1910)); // backoff alone never releases SAR
-    g.event(d.ticket,3,0,2877); drain(g,2877);
-    CHECK(g.enqueue(heartbeat(),2877) && g.next(2877,blocked));
-    CHECK(g.diagnostics(2877).first.packet.op==Op::LeaseAck && !g.healthy());
+    CHECK(!g.next(8110,d) && !g.healthy());
+    CHECK(g.diagnostics(9110).first.reason==ReasonT::QueueExpired && g.inFlight()==0);
+    CHECK(!g.enqueue(heartbeat(),9109));
+    CHECK(g.enqueue(heartbeat(),9110) && g.next(9110,d));
+    CHECK(g.diagnostics(9110).first.packet.op==Op::LeaseAck && !g.healthy());
   }
   for (bool missingAccept:{false,true}) {
     MeshTxGovernor g{1}; MeshTxGovernor::Dispatch d,next;
@@ -199,14 +219,21 @@ void governor_recovery_matrix() {
 }
 struct Slave {
   IO io; FlowJobController valve; MeshTxGovernor tx{1};
-  uint32_t acked=UINT32_MAX,sent=UINT32_MAX,at=0,summaryAt=0,helloAt=0;
+  uint32_t acked=UINT32_MAX,sent=UINT32_MAX,at=0,helloAt=0;
   JobKey ackedKey,sentKey; unsigned attempts=0;
   explicit Slave(ValveConfig cfg):valve(io,cfg){valve.boot({});}
-  void status(uint32_t now,bool force=false) {
-    auto s=valve.status(); if (!force && ackedKey==s.key && acked==s.revision) return;
-    auto p=packet(Op::Status,1); Writer w{p}; w.key(s.key); w.u32(s.pulses); w.u32(s.closePulses);
+  bool report(uint32_t now,bool force=false) {
+    const auto s=valve.status();
+    if ((s.phase!=Phase::Done && s.phase!=Phase::Fault) || (!force && ackedKey==s.key && acked==s.revision)) return false;
+    auto p=packet(Op::Result,1); Writer w{p}; w.key(s.key); w.u32(s.pulses); w.u32(s.closePulses);
     w.u32(s.k); w.u32(s.revision); w.u8(uint8_t(s.phase)); w.u8(uint8_t(s.reason));
-    w.u8((s.valveCommand?1:0)|(s.quiet?2:0)|(s.truncated?4:0)); CHECK(tx.enqueue(p,now) || !tx.healthy());
+    w.u8((s.valveCommand?1:0)|(s.quiet?2:0)|(s.truncated?4:0));
+    if (!tx.enqueue(p,now)) { CHECK(!tx.healthy()); return false; }
+    return true;
+  }
+  void commandAck(JobKey key,Op command,Reply result,uint32_t now) {
+    auto p=packet(Op::CommandAck,1); Writer w{p}; w.key(key); w.u8(uint8_t(command)); w.u8(uint8_t(result));
+    CHECK(tx.enqueue(p,now) || !tx.healthy());
   }
 };
 struct Flight { Packet p; uint32_t ticket,deliverAt,endAt; int from; bool delivered=false; };
@@ -214,13 +241,15 @@ struct Bench {
   Pump io; PumpConfig cfg; PumpSafetyController pump; Link link; MasterScheduler scheduler;
   std::array<std::unique_ptr<Slave>,5> slaves;
   std::vector<Flight> flights;
-  uint32_t now=100,seed=1; unsigned count; bool dropAck=false,dropEvent=false,missingEnd=false,duplicate=false;
+  uint32_t now=100,seed=1; unsigned count; bool dropAck=false,dropResultAck=false,missingEnd=false,duplicate=false;
+  bool dropResultsUntilQuery=false; unsigned summaryFrames=0,resultQueries=0,resultAcks=0;
+  static constexpr uint32_t SlowSarMs=3200;
   int slow=-1; uint32_t sarMs=65, ackDelay=0;
   static PumpConfig config(){PumpConfig c;c.commissioned=true;c.minOffMs=50;c.maxRunMs=240000;return c;}
   explicit Bench(unsigned n):cfg(config()),pump(io,cfg),scheduler(link,pump,uint8_t(n)),count(n) {
     pump.boot(0);
     ValveConfig vc;vc.commissioned=true;
-    for(unsigned i=0;i<n;++i){slaves[i]=std::make_unique<Slave>(vc);CHECK(scheduler.registerNode(i,{uint16_t(i+2),5880,1})==Reply::Ok);scheduler.hello(uint16_t(i+2),5880,1,true,now);}
+    for(unsigned i=0;i<n;++i){slaves[i]=std::make_unique<Slave>(vc);CHECK(scheduler.registerNode(i,{uint16_t(i+2),5880,1})==Reply::Ok);scheduler.hello(uint16_t(i+2),5880,1,true,now,ApprovedSlaveBuildIds[0]);}
   }
   void enqueue(unsigned i,Packet p){CHECK(slaves[i]->tx.enqueue(p,now) || !slaves[i]->tx.healthy());}
   void deliver(const Flight &f){
@@ -230,28 +259,31 @@ struct Bench {
         if(p.peer!=i+2 && p.peer!=AllSlaves)continue;
         auto &s=*slaves[i]; Reader v{p};
         if(p.op==Op::CapabilitiesGet){auto reply=packet(Op::Capabilities,1);Writer w{reply};w.u32(v.u32());w.u16(ProtocolRevision);w.u16(RequiredFeatures);w.u32(ApprovedSlaveBuildIds[0]);enqueue(i,reply);}
-        else if(p.op==Op::Prepare){Dose d;d.key=v.key();d.ml=v.u32();d.pulses=v.u32();d.k=v.u32();d.version=v.u32();d.maxMs=v.u32();CHECK(s.valve.prepare(d,now)==Reply::Ok);s.status(now);}
-        else if(p.op==Op::Start){const auto key=v.key();CHECK(s.valve.start(key,now)==Reply::Ok);if(duplicate)CHECK(s.valve.start(key,now)==Reply::Ok);s.status(now);}
-        else if(p.op==Op::Lease){const auto key=v.key();const auto seq=v.u32();const auto current=s.valve.status();if(current.key==key && !current.valveCommand && current.reason==Reason::Target && (current.phase==Phase::Settling || current.phase==Phase::Done)){s.status(now,true);continue;}const auto result=s.valve.lease(key,seq,now);auto ack=keyed(Op::LeaseAck,1,key,seq);ack.bytes[12]=uint8_t(result);enqueue(i,ack);}
-        else if(p.op==Op::Close){const auto key=v.key();s.valve.close(key,Reason(v.u8()),now);s.status(now);}
-        else if(p.op==Op::StatusGet)s.status(now,true);
-        else if(p.op==Op::EventAck && !dropEvent){const auto key=v.key();const auto rev=v.u32();if(key==s.valve.status().key && rev==s.valve.status().revision){s.acked=rev;s.ackedKey=key;}}
+        else if(p.op==Op::Prepare){Dose d;d.key=v.key();d.ml=v.u32();d.pulses=v.u32();d.k=v.u32();d.version=v.u32();d.maxMs=v.u32();d.speedFactorPermille=v.u16();d.leaseMs=v.u32();CHECK(v.u8()==0 && v.done());s.commandAck(d.key,Op::Prepare,s.valve.prepare(d,now),now);}
+        else if(p.op==Op::Start){const auto key=v.key();const auto result=s.valve.start(key,now);if(duplicate)CHECK(s.valve.start(key,now)==Reply::Ok);s.commandAck(key,Op::Start,result,now);}
+        else if(p.op==Op::Lease){const auto key=v.key();const auto seq=v.u32();const auto current=s.valve.status();if(current.key==key && !current.valveCommand && current.reason==Reason::Target && (current.phase==Phase::Settling || current.phase==Phase::Done)){s.report(now,true);continue;}const auto result=s.valve.lease(key,seq,now);auto ack=keyed(Op::LeaseAck,1,key,seq);ack.bytes[12]=uint8_t(result);enqueue(i,ack);}
+        else if(p.op==Op::Close){const auto key=v.key();s.valve.close(key,Reason(v.u8()),now);}
+        else if(p.op==Op::ResultQuery){++resultQueries;dropResultsUntilQuery=false;s.report(now,true);}
+        else if(p.op==Op::ResultAck){const auto key=v.key();const auto revision=v.u32();const auto current=s.valve.status();if(key==current.key && revision==current.revision){s.acked=revision;s.ackedKey=key;++resultAcks;}}
+        else if(p.op==Op::Summary)++summaryFrames;
       }
     }else{
       const uint16_t source=uint16_t(f.from+2);
       if(p.op==Op::Capabilities){const auto nonce=r.u32();const auto rev=r.u16(),features=r.u16();scheduler.capabilities(source,nonce,rev,features,r.u32(),now);}
-      else if(p.op==Op::Status){ValveStatus s;s.key=r.key();s.pulses=r.u32();s.closePulses=r.u32();s.k=r.u32();s.revision=r.u32();s.phase=Phase(r.u8());s.reason=Reason(r.u8());const auto flags=r.u8();s.valveCommand=flags&1;s.quiet=flags&2;s.truncated=flags&4;scheduler.status(source,s,now);auto ack=keyed(Op::EventAck,source,s.key);Writer w{ack};w.u32(s.revision);CHECK(link.send(ack) || !link.healthy());}
+      else if(p.op==Op::CommandAck){const auto key=r.key();const auto command=Op(r.u8());const auto result=Reply(r.u8());if(r.done())scheduler.commandReply(source,key,command,result,now);}
+      else if(p.op==Op::Result){ValveStatus s;s.key=r.key();s.pulses=r.u32();s.closePulses=r.u32();s.k=r.u32();s.revision=r.u32();s.phase=Phase(r.u8());s.reason=Reason(r.u8());const auto flags=r.u8();s.valveCommand=flags&1;s.quiet=flags&2;s.truncated=flags&4;if(dropResultsUntilQuery)return;if(scheduler.result(source,s,now) && !dropResultAck){auto ack=keyed(Op::ResultAck,source,s.key);Writer w{ack};w.u32(s.revision);CHECK(link.send(ack) || !link.healthy());}}
       else if(p.op==Op::LeaseAck && !dropAck){const auto key=r.key();const auto seq=r.u32();scheduler.leaseAck(source,key,seq,Reply(r.u8()),now);}
-      else if(p.op==Op::Hello)scheduler.hello(source,5880,1,true,now);
+      else if(p.op==Op::Hello){const auto k=r.u32(),version=r.u32();const bool commissioned=r.u8()==1;const auto build=r.u32();CHECK(r.done());scheduler.hello(source,k,version,commissioned,now,build);}
     }
   }
   void dispatch(MeshTxGovernor &g,int from){
     MeshTxGovernor::Trace trace;while(g.takeTrace(trace)){}
     MeshTxGovernor::Dispatch d;if(!g.next(now,d))return;
+    if(d.packet.op==Op::Summary)++summaryFrames;
     g.event(d.ticket,1,0,now);
     seed=seed*1664525U+1013904223U;
     const uint32_t delay=20+(seed%5)*5;
-    uint32_t life=(from==slow && slow>=0)?900:sarMs;
+    uint32_t life=(from==slow && slow>=0)?SlowSarMs:sarMs;
     flights.push_back({d.packet,d.ticket,now+delay+(d.packet.op==Op::LeaseAck?ackDelay:0),now+life,from,false});
     CHECK(flights.size()<128);
   }
@@ -263,9 +295,8 @@ struct Bench {
       if(!s.tx.healthy())s.valve.emergency(Reason::Transport,now);
       const auto v=s.valve.status();
       if(s.sentKey!=v.key || s.sent!=v.revision){s.sentKey=v.key;s.sent=v.revision;s.at=now-1000;s.attempts=0;}
-      if((s.ackedKey!=v.key || s.acked!=v.revision) && s.attempts<6 && elapsed(now,s.at,1000+(i+2)*13)){s.at=now;++s.attempts;s.status(now);}
-      if(elapsed(now,s.helloAt,10000)){auto p=packet(Op::Hello,1);Writer w{p};w.u32(5880);w.u32(1);w.u8(1);enqueue(i,p);s.helloAt=now;}
-      if(s.valve.busy() && elapsed(now,s.summaryAt,TelemetryMs)){auto p=keyed(Op::Summary,1,v.key);Writer w{p};w.u32(v.pulses);w.u32(v.revision);w.u8(uint8_t(v.phase));w.u8(v.valveCommand);enqueue(i,p);s.summaryAt=now;}
+      if(v.phase==Phase::Done || v.phase==Phase::Fault){if(s.sentKey!=v.key || s.sent!=v.revision){s.sentKey=v.key;s.sent=v.revision;s.at=now-1000;s.attempts=0;}if((s.ackedKey!=v.key || s.acked!=v.revision) && s.attempts<6 && elapsed(now,s.at,1000+(i+2)*13)){if(s.report(now)){s.at=now;++s.attempts;}}}
+      if(elapsed(now,s.helloAt,10000)){auto p=packet(Op::Hello,1);Writer w{p};w.u32(5880);w.u32(1);w.u8(1);w.u32(ApprovedSlaveBuildIds[0]);enqueue(i,p);s.helloAt=now;}
     }
     for(size_t j=0;j<flights.size();){
       auto &f=flights[j];
@@ -298,7 +329,7 @@ void joint_runs(){
   for(unsigned n:{1U,2U,5U}){
     Bench b(n);
     for(unsigned id=1;id<=1000;++id){
-      b.dropEvent=id%3==0;b.duplicate=true;b.begin(id);b.finish();
+      b.dropResultAck=id%3==0;b.duplicate=true;b.begin(id);b.finish();
       if(b.scheduler.report().phase!=SchedulePhase::Complete) {
         const auto r=b.scheduler.report();
         std::fprintf(stderr,"FAILED n=%u id=%u now=%u phase=%u done=%x failed=%x unknown=%x txhealthy=%u reason=%u\n",n,id,b.now,unsigned(r.phase),r.complete,r.failed,r.unknown,b.link.tx.healthy(),unsigned(b.scheduler.stopReason()));
@@ -309,7 +340,8 @@ void joint_runs(){
       b.clean();
     }
     CHECK(b.link.tx.metrics().peakSar<=2);
-    std::printf("PASS %u nodes x 1000 batches, 500 mL/2940 pulse simulation, duplicate Start/drop EventAck, bounded/empty windows\n",n);
+    CHECK(b.summaryFrames==0);
+    std::printf("PASS %u nodes x 1000 batches, 500 mL/2940 pulse simulation, duplicate Start/drop ResultAck, no SUMMARY\n",n);
   }
   for(unsigned mode=0;mode<4;++mode){
     Bench b(5);b.begin(1);
@@ -317,10 +349,16 @@ void joint_runs(){
     if(mode==1)b.slow=4;
     if(mode==2)b.missingEnd=true;
     if(mode==3){b.run(1800);b.scheduler.stop(Reason::Manual,b.now);CHECK(!b.io.on);}
-    b.finish();CHECK(b.scheduler.report().phase==SchedulePhase::Failed && !b.io.on);
+    b.finish();
+    CHECK(b.scheduler.report().phase==SchedulePhase::Failed && !b.io.on);
     for(unsigned i=0;i<5;++i)CHECK(!b.slaves[i]->io.on);
   }
-  std::puts("PASS five-node ACK loss/slow node/missing SAR end/manual stop: local stop and remote closure");
+  std::puts("PASS five-node lease ACK loss/slow node/missing SAR end/manual stop: local stop and remote closure");
+  {
+    Bench b(1); b.dropResultsUntilQuery=true; b.begin(1); b.finish();
+    CHECK(b.scheduler.report().phase==SchedulePhase::Failed && b.scheduler.report().complete==1 &&
+      b.scheduler.report().unknown==0 && b.resultQueries>0 && b.resultAcks>=1 && b.summaryFrames==0);
+  }
   Bench soak(5);uint32_t id=0;const auto start=soak.now;
   while(!elapsed(soak.now,start,8U*60*60*1000)){
     soak.begin(++id);soak.finish();CHECK(soak.scheduler.report().phase==SchedulePhase::Complete);soak.run(1000);soak.clean();

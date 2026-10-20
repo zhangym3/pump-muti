@@ -128,7 +128,7 @@ def main():
     board = (master / "include/board_profile.h").read_text(encoding="utf-8")
     require(re.search(r"MaxConcurrent\s*=\s*1\s*;", board), "Production concurrency must stay 1")
     expectations = {
-        master / f".pio/host-{label}.log": ["28 test groups passed", "PASS governor", "PASS simulated 8h/5 nodes"] +
+        master / f".pio/host-{label}.log": ["30 test groups passed", "PASS governor", "PASS simulated 8h/5 nodes"] +
             [f"PASS {n} nodes x 1000 batches" for n in (1, 2, 5)],
         master / f".pio/sdk-{label}.log": ["PASS SDK host harness and complete component pinning"],
         master / f".pio/log-tools-{label}.log": ["Ran 7 tests", "OK"],

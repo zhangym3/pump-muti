@@ -26,9 +26,12 @@ Reply MasterScheduler::registerNode(size_t slot, RegisteredNode cfg) {
   if (existing >= 0 && size_t(existing) != slot) return Reply::Conflict;
   nodes_[slot] = {}; nodes_[slot].config = cfg; return Reply::Ok;
 }
-void MasterScheduler::hello(uint16_t source, uint32_t k, uint32_t ver, bool commissioned, uint32_t now) {
+void MasterScheduler::hello(uint16_t source, uint32_t k, uint32_t ver, bool commissioned,
+                            uint32_t now, uint32_t buildId) {
   const int i = find(source); if (i < 0) return;
   auto &n = nodes_[i]; n.seen = true; n.seenAt = now;
+  if (n.helloBuildId != buildId) n.capable = false;
+  n.helloBuildId = buildId;
   n.commissioned = commissioned && n.config.k == k && n.config.version == ver;
 }
 Reply MasterScheduler::check(uint32_t mask, uint32_t ml, uint32_t maxMs, uint32_t now, const uint8_t *amounts) {
@@ -61,7 +64,12 @@ void MasterScheduler::begin(JobKey key, uint32_t mask, uint32_t ml, uint32_t max
   ml_ = ml; maxMs_ = maxMs; pumpSeq_ = 0; abort_ = false; stopReason_ = Reason::None;
   capNonce_ = key.epoch ^ (key.id * 2654435761U); if (!capNonce_) capNonce_ = 1;
   preflight_ = true;
-  for (auto &n : nodes_) n.capable = false;
+  for (auto &n : nodes_) {
+    if (n.capable && (n.capabilityRevision != ProtocolRevision ||
+        (n.capabilityFeatures & RequiredFeatures) != RequiredFeatures ||
+        (n.helloBuildId && n.helloBuildId != n.buildId) || !n.seen || elapsed(now, n.seenAt, 15000)))
+      n.capable = false;
+  }
   for (size_t i = 0; i < MaxNodes; ++i) amounts_[i] = amounts ? amounts[i] : 0;
   batch(now);
 }
@@ -88,11 +96,18 @@ bool MasterScheduler::sendNode(size_t i, Op op) {
     uint32_t pulses = 0; targetPulses(ml, nodes_[i].config.k, pulses);
     w.u32(ml); w.u32(pulses); w.u32(nodes_[i].config.k);
     w.u32(nodes_[i].config.version); w.u32(maxMs_);
+    const uint16_t speed = pump_.speed() == 1 ? SpeedLowPermille : pump_.speed() == 2 ? SpeedMediumPermille : SpeedHighPermille;
+    w.u16(speed); w.u32(LeaseMs); w.u8(0);
   }
   return net_.send(p);
 }
 void MasterScheduler::closeBatch(Reason r) {
-  auto p = packet(Op::Close, AllSlaves); Writer w{p}; w.key(report_.key); w.u8(uint8_t(r)); net_.send(p);
+  for (size_t i = 0; i < MaxNodes; ++i) {
+    const uint32_t bit = uint32_t(1) << i;
+    if (!(batch_ & bit) || (final_ & bit)) continue;
+    auto p = packet(Op::Close, nodes_[i].config.address); Writer w{p}; w.key(report_.key); w.u8(uint8_t(r));
+    net_.send(p);
+  }
 }
 void MasterScheduler::stop(Reason r, uint32_t now) {
   pump_.stop(now); // Always local pump first, before any radio operation.
@@ -198,12 +213,20 @@ bool MasterScheduler::capabilities(uint16_t source, uint32_t nonce, uint16_t rev
   if (revision != ProtocolRevision || (features & RequiredFeatures) != RequiredFeatures || !approvedSlaveBuild(buildId)) {
     report_.failed |= uint32_t(1) << i; stop(Reason::Protocol,now); return true;
   }
-  nodes_[i].capable = true; nodes_[i].buildId = buildId; return true;
+  auto &n = nodes_[i];
+  if (!n.seen || elapsed(now, n.seenAt, 15000) || (n.helloBuildId && n.helloBuildId != buildId)) {
+    report_.failed |= uint32_t(1) << i; stop(Reason::Protocol,now); return true;
+  }
+  n.capable = true; n.buildId = buildId; n.capabilityRevision = revision;
+  n.capabilityFeatures = features;
+  if (!n.helloBuildId) n.helloBuildId = buildId;
+  return true;
 }
 bool MasterScheduler::leaseAck(uint16_t source, JobKey key, uint32_t sequence, Reply result, uint32_t now) {
   const int i = find(source);
   if (i < 0 || abort_ || (report_.phase != SchedulePhase::Opening && report_.phase != SchedulePhase::Supplying) ||
       key != report_.key || !sequence || result > Reply::Unknown) return false;
+  if (report_.phase == SchedulePhase::Opening && bootstrap_ && elapsed(now,bootstrapAt_,2400)) return false;
   const uint32_t bit = uint32_t(1) << i;
   if (!(batch_ & bit) || !(opened_ & bit) || (closed_ & bit)) return false;
   auto &n = nodes_[i];
@@ -211,7 +234,11 @@ bool MasterScheduler::leaseAck(uint16_t source, JobKey key, uint32_t sequence, R
     if (v.acked || elapsed(now,v.issuedAt,LeaseAckTimeoutMs)) return false;
     if (!v.accepted) { if (!v.early) { v.early=true; v.result=result; } return false; }
     v.acked = true;
-    if (result != Reply::Ok) { report_.failed |= bit; stop(Reason::Transport,now); return true; }
+    if (result != Reply::Ok) {
+      report_.failed |= bit;
+      stop(result == Reply::Stale ? Reason::Lease : Reason::Transport,now);
+      return true;
+    }
     if (n.leaseAckSeen && !serialNewer(sequence,n.leaseAckSequence)) return false;
     n.leaseAckSeen = true; n.leaseAckSequence = sequence; n.leaseAckAt = v.issuedAt;
     return true;
@@ -237,9 +264,18 @@ bool MasterScheduler::commandReply(uint16_t source, JobKey key, Op command, Repl
       (command == Op::Start && report_.phase != SchedulePhase::Opening)) return false;
   const uint32_t bit = uint32_t(1) << index;
   if (!(batch_ & bit)) return false;
-  if (result == Reply::Ok) return true; // STATUS remains the physical-state acknowledgement.
+  if (result == Reply::Ok) {
+    if (command == Op::Prepare) prepared_ |= bit;
+    else opened_ |= bit;
+    return true;
+  }
   report_.failed |= bit;
   stop(Reason::Transport, now);
+  return true;
+}
+bool MasterScheduler::result(uint16_t source, const ValveStatus &s, uint32_t now) {
+  if (s.phase != Phase::Done && s.phase != Phase::Fault) return false;
+  status(source, s, now);
   return true;
 }
 void MasterScheduler::tick(uint32_t now) {
@@ -319,7 +355,7 @@ void MasterScheduler::tick(uint32_t now) {
     if ((final_ & batch_) != batch_ && elapsed(now,txAt_,300)) {
       for (size_t j=0;j<MaxNodes;++j) {
         const size_t i=cursor_++%MaxNodes;
-        if ((batch_ & (uint32_t(1)<<i)) && !(final_ & (uint32_t(1)<<i))) { sendNode(i,Op::StatusGet); break; }
+        if ((batch_ & (uint32_t(1)<<i)) && !(final_ & (uint32_t(1)<<i))) { sendNode(i,Op::ResultQuery); break; }
       }
       txAt_=now;
     }
