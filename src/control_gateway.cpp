@@ -214,7 +214,8 @@ bool ControlGateway::init(uint32_t passkey, const char *name) {
   if (!name || !name[0] || strlen(name) >= sizeof(deviceName)) return false;
   memcpy(deviceName, name, strlen(name) + 1);
   commands_ = xQueueCreate(12, sizeof(CommandLine)); output_ = xQueueCreate(32, 192);
-  if (!commands_ || !output_) return false;
+  liveOutput_ = xQueueCreate(5, 192);
+  if (!commands_ || !output_ || !liveOutput_) return false;
   if (uart_driver_install(UART_NUM_0, 1024, 2048, 0, nullptr, 0) != ESP_OK) return false;
   uart_config_t uart{};
   uart.baud_rate = 115200;
@@ -296,6 +297,12 @@ bool ControlGateway::publish(const char *text) {
   char line[192] = {}; snprintf(line, sizeof(line), "%s\n", text);
   return output_ && xQueueSend(output_, line, 0) == pdTRUE;
 }
+bool ControlGateway::publishLive(const char *text) {
+  // Replaceable monitoring has its own bounded queue; it cannot fill response capacity.
+  if (!connected || !secure || !subscribed) return false;
+  char line[192] = {}; snprintf(line, sizeof(line), "%s\n", text);
+  return liveOutput_ && xQueueSend(liveOutput_, line, 0) == pdTRUE;
+}
 void ControlGateway::ioWorker() {
   char input[160] = {}; size_t used = 0; bool discarding = false;
   for (;;) {
@@ -309,7 +316,7 @@ void ControlGateway::ioWorker() {
       else { discarding = true; used = 0; }
     }
     char out[192];
-    if (xQueueReceive(output_, out, 0) == pdTRUE) {
+    if (xQueueReceive(output_, out, 0) == pdTRUE || xQueueReceive(liveOutput_, out, 0) == pdTRUE) {
       // Use the same FILE lock as ESP_LOG's vprintf for complete reply lines.
       flockfile(stdout);
       fwrite(out, 1, strlen(out), stdout);

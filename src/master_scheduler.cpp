@@ -34,6 +34,22 @@ void MasterScheduler::hello(uint16_t source, uint32_t k, uint32_t ver, bool comm
   n.helloBuildId = buildId;
   n.commissioned = commissioned && n.config.k == k && n.config.version == ver;
 }
+uint32_t MasterScheduler::coefficient(size_t slot) const {
+  const auto &n = nodes_[slot];
+  return n.calibration.valid() ? n.calibration.coefficient(pump_.speed()) : n.config.k;
+}
+uint16_t MasterScheduler::features(size_t slot) const {
+  return RequiredFeatures | (nodes_[slot].calibration.valid() ? JobCalibrationFeature : 0);
+}
+Reply MasterScheduler::setCalibration(size_t slot, const SpeedCalibration &value) {
+  if (active() || pump_.output() || pump_.testing()) return Reply::Busy;
+  if (slot >= MaxNodes) return Reply::Invalid;
+  const auto &cfg = nodes_[slot].config;
+  if (!value.matches(cfg.address, cfg.k, cfg.version)) return Reply::Invalid;
+  nodes_[slot].calibration = value;
+  nodes_[slot].capable = false; // Revalidate support before the next task.
+  return Reply::Ok;
+}
 Reply MasterScheduler::check(uint32_t mask, uint32_t ml, uint32_t maxMs, uint32_t now, const uint8_t *amounts) {
   if (active()) return Reply::Busy;
   if (!mask || (amounts ? ml != 0 || !validAmounts(mask, amounts) : !ml) ||
@@ -42,7 +58,7 @@ Reply MasterScheduler::check(uint32_t mask, uint32_t ml, uint32_t maxMs, uint32_
   for (size_t i = 0; i < MaxNodes; ++i) if (mask & (uint32_t(1) << i)) {
     const auto &n = nodes_[i]; uint32_t pulses = 0;
     if (!n.config.address || !n.seen || elapsed(now, n.seenAt, 15000)) return Reply::Offline;
-    if (!n.commissioned || !targetPulses(amounts ? uint32_t(amounts[i]) * 50 : ml, n.config.k, pulses)) return Reply::NotReady;
+    if (!n.commissioned || !targetPulses(amounts ? uint32_t(amounts[i]) * 50 : ml, coefficient(i), pulses)) return Reply::NotReady;
     if (n.status.phase >= Phase::Prepared && n.status.phase <= Phase::Settling) return Reply::Busy;
   }
   return Reply::Ok;
@@ -65,8 +81,9 @@ void MasterScheduler::begin(JobKey key, uint32_t mask, uint32_t ml, uint32_t max
   capNonce_ = key.epoch ^ (key.id * 2654435761U); if (!capNonce_) capNonce_ = 1;
   preflight_ = true;
   for (auto &n : nodes_) {
+    n.live = {};
     if (n.capable && (n.capabilityRevision != ProtocolRevision ||
-        (n.capabilityFeatures & RequiredFeatures) != RequiredFeatures ||
+        (n.capabilityFeatures & features(size_t(&n - nodes_))) != features(size_t(&n - nodes_)) ||
         (n.helloBuildId && n.helloBuildId != n.buildId) || !n.seen || elapsed(now, n.seenAt, 15000)))
       n.capable = false;
   }
@@ -97,11 +114,13 @@ MeshTxGovernor::Admission MasterScheduler::sendNode(size_t i, Op op) {
   auto p = packet(op, nodes_[i].config.address); Writer w{p}; w.key(report_.key);
   if (op == Op::Prepare) {
     const uint32_t ml = ml_ ? ml_ : uint32_t(amounts_[i]) * 50;
-    uint32_t pulses = 0; targetPulses(ml, nodes_[i].config.k, pulses);
-    w.u32(ml); w.u32(pulses); w.u32(nodes_[i].config.k);
+    const uint32_t k = coefficient(i);
+    uint32_t pulses = 0; targetPulses(ml, k, pulses);
+    w.u32(ml); w.u32(pulses); w.u32(k);
     w.u32(nodes_[i].config.version); w.u32(maxMs_);
     const uint16_t speed = pump_.speed() == 1 ? SpeedLowPermille : pump_.speed() == 2 ? SpeedMediumPermille : SpeedHighPermille;
-    w.u16(speed); w.u32(LeaseMs); w.u8(0); w.u32(leaseFloor_);
+    w.u16(speed); w.u32(LeaseMs);
+    w.u8((nodes_[i].calibration.valid() ? PrepareCalibrated : 0) | PrepareLiveTelemetry); w.u32(leaseFloor_);
   }
   if (op == Op::Prepare) return net_.prepare(p);
   return net_.send(p) ? MeshTxGovernor::Admission::Accepted : MeshTxGovernor::Admission::Failed;
@@ -130,6 +149,26 @@ bool MasterScheduler::summary(uint16_t source, JobKey key, uint32_t pulses, uint
   n.telemetryPulses = pulses; n.telemetryAt = now; n.telemetrySeen = true;
   n.seen = true; n.seenAt = now; return true; // Monitoring only; never advances the state machine.
 }
+bool MasterScheduler::progress(uint16_t source, JobKey key, uint32_t pulses, uint32_t runtimeMs, uint32_t now) {
+  const int index = find(source);
+  if (index < 0 || !active() || abort_ || key != report_.key || !runtimeMs || runtimeMs > maxMs_ ||
+      (report_.phase != SchedulePhase::Opening && report_.phase != SchedulePhase::Supplying)) return false;
+  const uint32_t bit = uint32_t(1) << index;
+  if (!(batch_ & bit) || !(opened_ & bit) || (closed_ & bit) || (final_ & bit)) return false;
+  auto &node = nodes_[index];
+  auto &previous = node.live;
+  if (previous.seen && (previous.key != key || !serialNewer(runtimeMs, previous.runtimeMs) || pulses < previous.pulses)) return false;
+  if (node.status.key == key && pulses < node.status.pulses) return false;
+  const uint32_t k = coefficient(size_t(index));
+  // First sample uses the interval since opening; later samples use pulse deltas.
+  const uint32_t deltaMs = runtimeMs - (previous.seen ? previous.runtimeMs : 0);
+  const uint32_t deltaPulses = pulses - (previous.seen ? previous.pulses : 0);
+  const uint64_t value = uint64_t(deltaPulses) * 60000000ULL / (uint64_t(k) * deltaMs);
+  const uint32_t rate = value > UINT32_MAX ? UINT32_MAX : uint32_t(value);
+  previous = {key, pulses, runtimeMs, now, volumeMl(pulses, k), rate, true};
+  node.seen = true; node.seenAt = now;
+  return true;
+}
 void MasterScheduler::status(uint16_t source, const ValveStatus &s, uint32_t now) {
   const int index = find(source); if (index < 0) return;
   auto &n = nodes_[index]; n.seenAt = now; n.seen = true;
@@ -138,6 +177,7 @@ void MasterScheduler::status(uint16_t source, const ValveStatus &s, uint32_t now
   if (n.status.key.valid() && s.key != n.status.key && !s.key.newer(n.status.key)) return;
   if (s.key != n.status.key) n.telemetrySeen = false;
   n.status = s;
+  if (s.phase == Phase::Settling || s.phase == Phase::Done || s.phase == Phase::Fault) n.live.seen = false;
   if (!n.telemetrySeen || s.pulses >= n.telemetryPulses) {
     n.telemetryPulses = s.pulses; n.telemetryAt = now; n.telemetrySeen = true;
   }
@@ -228,7 +268,7 @@ bool MasterScheduler::capabilities(uint16_t source, uint32_t nonce, uint16_t rev
   if (i < 0 || !preflight_ || report_.phase != SchedulePhase::Preparing || nonce != capNonce_ ||
       !(report_.selected & (uint32_t(1) << i))) return false;
   // Compatibility comes from the protocol and features, not a list of build hashes.
-  if (revision != ProtocolRevision || (features & RequiredFeatures) != RequiredFeatures || !buildId) {
+  if (revision != ProtocolRevision || (features & this->features(size_t(i))) != this->features(size_t(i)) || !buildId) {
     guard_="PROTOCOL_MISMATCH"; report_.failed |= uint32_t(1) << i; stop(Reason::Protocol,now); return true;
   }
   auto &n = nodes_[i];
@@ -272,6 +312,7 @@ bool MasterScheduler::targetClosed(uint16_t source, JobKey key, uint32_t now) {
   const uint32_t bit=uint32_t(1)<<i;
   if (!(batch_ & bit) || !nodes_[i].startIssued) return false;
   closed_|=bit;
+  nodes_[i].live.seen=false;
   net_.retire(source,key,Op::Start); net_.retire(source,key,Op::Lease);
   if (closed_==batch_ && (report_.phase==SchedulePhase::Opening || report_.phase==SchedulePhase::Supplying)) {
     pump_.stop(now); report_.phase=SchedulePhase::Draining; stageAt_=txAt_=now;

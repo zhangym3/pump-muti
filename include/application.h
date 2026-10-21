@@ -26,6 +26,7 @@ class Application {
   void localState(uint32_t now);
   void meshState();
   void pumpPwmState(Reply reply = Reply::Ok);
+  void calibrationState(uint32_t request, size_t slot, Reply reply);
   void pumpTestReply(const ControlRequest &q, Reply result, uint32_t now);
   bool idle() const;
   void meshState(uint32_t request);

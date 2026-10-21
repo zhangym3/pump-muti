@@ -398,7 +398,7 @@ void wire_contract_vectors() {
     uint8_t(Op::Result) == 0xC5 && uint8_t(Op::ResultAck) == 0xC7 &&
     uint8_t(Op::Hello) == 0xCA && uint8_t(Op::HelloReply) == 0xCB &&
     uint8_t(Op::CommandAck) == 0xCF && uint8_t(Op::CapabilitiesGet) == 0xD0 &&
-    uint8_t(Op::Capabilities) == 0xD1);
+    uint8_t(Op::Capabilities) == 0xD1 && uint8_t(Op::Progress) == 0xD6);
   auto hello=packet(Op::Hello,2); Writer helloWriter{hello}; helloWriter.u32(5880);
   helloWriter.u32(1); helloWriter.u8(1); helloWriter.u32(TestSlaveBuildId);
   CHECK(hello.size==13);
@@ -413,6 +413,11 @@ void wire_contract_vectors() {
     decoded.client == q.client && decoded.sequence == q.sequence && decoded.mask == q.mask && decoded.ml == q.ml &&
     decoded.maxMs == q.maxMs && decoded.stopKey == q.stopKey);
   --p.size; CHECK(!decodeRequest(p, decoded));
+  auto progress=packet(Op::Progress,2); Writer progressWriter{progress};
+  progressWriter.key({1,2}); progressWriter.u32(120); progressWriter.u32(2000);
+  const uint8_t expectedProgress[] = {1,0,0,0,2,0,0,0,0x78,0,0,0,0xD0,0x07,0,0};
+  CHECK(progress.peer==2 && unicast(progress.peer) && controlFormat(progress) && progress.size==sizeof(expectedProgress));
+  for(size_t i=0;i<sizeof(expectedProgress);++i) CHECK(progress.bytes[i]==expectedProgress[i]);
 }
 void individual_request_and_durable_replay() {
   char plan[65]; memset(plan, '0', 64); plan[64] = 0;
@@ -451,14 +456,14 @@ void individual_scheduler_prepares_each_slot_and_retains_global_limit() {
   auto p = f.net.sent.back(); Reader first{p}; CHECK(p.op == Op::Prepare && p.peer == 2);
   CHECK(first.key() == JobKey{1,1}); CHECK(first.u32() == 300 && first.u32() == 300);
   CHECK(first.u32() == 1000 && first.u32() == 1 && first.u32() == 60000);
-  CHECK(first.u16() == SpeedLowPermille && first.u32() == LeaseMs && first.u8() == 0 && first.u32() == 1 && first.done());
+  CHECK(first.u16() == SpeedLowPermille && first.u32() == LeaseMs && first.u8() == PrepareLiveTelemetry && first.u32() == 1 && first.done());
   f.status(0,Phase::Prepared,Reason::None,1,200); f.tick(200);
   f.status(0,Phase::Done,Reason::Target,3,210); f.tick(210); f.tick(220);
   f.tick(260); f.tick(310);
   p = f.net.sent.back(); Reader second{p}; CHECK(p.op == Op::Prepare && p.peer == 33);
   CHECK(second.key() == JobKey{1,1}); CHECK(second.u32() == 2000 && second.u32() == 2000);
   CHECK(second.u32() == 1000 && second.u32() == 1 && second.u32() == 60000);
-  CHECK(second.u16() == SpeedLowPermille && second.u32() == LeaseMs && second.u8() == 0 && second.u32() == 1 && second.done());
+  CHECK(second.u16() == SpeedLowPermille && second.u32() == LeaseMs && second.u8() == PrepareLiveTelemetry && second.u32() == 1 && second.done());
   // The complete plan is already resident in the master; no second phone command is required.
   f.status(31,Phase::Prepared,Reason::None,1,350); f.tick(350);
   f.status(31,Phase::Done,Reason::Target,3,360); f.tick(360); f.tick(370);
@@ -714,7 +719,49 @@ void v4_exact_boundaries_and_ledger() {
   CHECK(!f.scheduler.compactLeaseAck(2,1,1299,Reply::Ok,3201));
   CHECK(f.scheduler.targetClosed(2,{1,1},3201) && !f.io.on && !f.scheduler.finalMask());
 }
+void speed_calibration_storage_and_preflight() {
+  CalibrationStore saved, decoded;
+  CHECK(decodeCalibrations(&saved,sizeof(saved),decoded));
+  CHECK(!decoded.nodes[0].valid());
+  SpeedCalibration c; c.address=2; c.baseK=1000; c.baseVersion=1; c.revision=1;
+  c.low=4000; c.medium=5000; c.high=6000;
+  saved.nodes[0]=c;
+  CHECK(decodeCalibrations(&saved,sizeof(saved),decoded));
+  CHECK(decoded.nodes[0].matches(2,1000,1));
+  CHECK(!decoded.nodes[0].matches(3,1000,1) && !decoded.nodes[0].matches(2,1000,2));
+  CHECK(!decoded.nodes[0].matches(2,2000,1));
+  CHECK(!decodeCalibrations(&saved,sizeof(saved)-1,decoded));
+  saved.nodes[0].low=0; CHECK(!decodeCalibrations(&saved,sizeof(saved),decoded));
+  saved.nodes[0]=c; saved.format=2; CHECK(!decodeCalibrations(&saved,sizeof(saved),decoded));
+  for(uint8_t level=1;level<=3;++level) {
+    ScheduleFixture f;
+    CHECK(f.pump.setSpeed(level,100)==Reply::Ok);
+    CHECK(f.scheduler.setCalibration(0,c)==Reply::Ok);
+    CHECK(f.scheduler.check(1,500,60000,100)==Reply::Ok);
+    f.scheduler.begin({1,1},1,500,60000,100); f.net.now=150; f.scheduler.tick(150);
+    Packet probe; bool found=false;
+    for(const auto &p:f.net.sent) if(p.op==Op::CapabilitiesGet) { probe=p; found=true; }
+    CHECK(found && !f.io.on); Reader r{probe};
+    CHECK(f.scheduler.capabilities(2,r.u32(),ProtocolRevision,RequiredFeatures|JobCalibrationFeature,TestSlaveBuildId,150));
+    for(unsigned step=0;step<4;++step) { f.net.now=200+step*100; f.scheduler.tick(f.net.now); }
+    bool prepared=false;
+    for(const auto &p:f.net.sent) if(p.op==Op::Prepare) {
+      Reader d{p}; CHECK(d.key()==JobKey{1,1}); CHECK(d.u32()==500);
+      CHECK(d.u32()==c.coefficient(level)/2); CHECK(d.u32()==c.coefficient(level));
+      CHECK(d.u32()==1 && d.u32()==60000);
+      CHECK(d.u16()==(level==1?500:level==2?750:1000)); CHECK(d.u32()==LeaseMs);
+      CHECK(d.u8()==(PrepareCalibrated | PrepareLiveTelemetry) && d.u32()>0 && d.done()); prepared=true;
+    }
+    CHECK(prepared && !f.io.on && f.scheduler.setCalibration(0,c)==Reply::Busy);
+  }
+  ScheduleFixture legacy; CHECK(legacy.scheduler.setCalibration(0,c)==Reply::Ok);
+  legacy.scheduler.begin({1,1},1,500,60000,100); legacy.tick(150);
+  CHECK(legacy.scheduler.stopReason()==Reason::Protocol && !legacy.io.on);
+  CHECK(legacy.net.count(Op::Prepare)==0 && legacy.net.count(Op::Start)==0);
+}
 int main() {
+  speed_calibration_storage_and_preflight();
+  std::puts("PASS per-speed K storage validation, slot identity, three PREPARE vectors and legacy preflight rejection");
   v4_exact_boundaries_and_ledger();
   std::puts("PASS V4 early StartOK/rejection, sparse-slot phases, field 2680ms/1283ms, 3999/4000 boundary, 300 ledger commits and cancel late proofs");
   struct Test { const char *name; void (*run)(); } tests[] = {

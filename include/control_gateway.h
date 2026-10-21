@@ -10,11 +10,12 @@ class ControlGateway {
   bool receive(CommandLine &cmd);
   bool submit(const char *text, size_t length, bool bluetooth);
   bool publish(const char *text);
+  bool publishLive(const char *text);
   void ioWorker();
   uint32_t bluetoothStackMinimumBytes() const;
   bool overflow() { return overflow_.exchange(false); }
  private:
-  QueueHandle_t commands_ = nullptr, output_ = nullptr;
+  QueueHandle_t commands_ = nullptr, output_ = nullptr, liveOutput_ = nullptr;
   std::atomic<bool> overflow_{false};
 };
 }

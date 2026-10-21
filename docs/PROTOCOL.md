@@ -2,7 +2,7 @@
 
 Bluetooth Mesh Vendor CID `0x02E5`、Model ID `0x0001`，群组 `0xC001`。固定使用 NetKey index 0 / AppKey index 0。所有多字节字段显式小端，禁止直接发送 C++ 内存结构。
 
-当前 Mesh 能力为 `revision=4, features=0x01FF`。V3/V4 主从不可混装；手机请求与最终结果格式保持兼容。实现与验收状态见 [五路修复实施及验收台账](FIVE_CHANNEL_IMPLEMENTATION_ACCEPTANCE_20261020.md)。
+当前 Mesh 能力为 `revision=4, features=0x05FF`；需要逐任务标定时再要求 `0x0200`。V3/V4 主从不可混装；手机请求与最终结果格式保持兼容。实现与验收状态见 [五路修复实施及验收台账](FIVE_CHANNEL_IMPLEMENTATION_ACCEPTANCE_20261020.md)。
 
 `JobKey` = `epoch:u32 + id:u32`，两者都非零。epoch 在主节点每次启动时持久化递增；id 在请求正式接受前递增并保存。节点地址来自 Mesh 上下文，不在业务载荷内重复声明。
 
@@ -32,8 +32,11 @@ Bluetooth Mesh Vendor CID `0x02E5`、Model ID `0x0001`，群组 `0xC001`。固�
 | D3 TARGET_CLOSED_ACK | 主→从，单播 | key，独立于最终结果确认 | 8 |
 | D4 PREPARE_OK | 从→主，单播 | key，opcode 表示 Prepare 成功 | 8 |
 | D5 START_OK | 从→主，单播 | key，opcode 表示 Start 成功 | 8 |
+| D6 PROGRESS | 从→主，单播 | key, pulses:u32, runtimeMs:u32 | 16 |
 
-业务载荷之外还有 opcode、MIC 和 Mesh 层开销；业务载荷超过 8 字节时由当前传输层按分段报文处理。配置提供 16 个 RX 分段上下文、8 个 TX 上下文；它们不构成 32 节点吞吐保证。C6 不再发送任何周期流量摘要。
+PREPARE flags bit0 表示主机为本任务提供已认证的 K，bit1 启用 D6 实时快照；未知位拒绝。D6 仅使用从机保存的主节点单播地址，绝不发往 C001 群组或其他广播地址；主机校验任务和节点状态后计算毫升及流速，并通过现有加密 GATT 通知发送 `LIVE addr=NNNN job=E:I pulses=N ml=N runtime_ms=N rate_ml_min=N`。遥测是可丢弃的监控快照，不确认、不改变调度状态、不替代 RESULT。APP 仅在当前任务页显示，6 秒无新样本即显示过期；最终 FLOW/RESULT 仍是结算依据。
+
+业务载荷之外还有 opcode、MIC 和 Mesh 层开销；业务载荷超过 8 字节时由当前传输层按分段报文处理。配置提供 16 个 RX 分段上下文、8 个 TX 上下文；它们不构成 32 节点吞吐保证。C6 不再发送周期流量摘要；D6 仅在 PREPARE 显式启用后、阀门打开期间每约 2 秒按节点单播发送。
 
 从机阶段枚举顺序由 `include/protocol.h` 定义：`Idle, Prepared, Opening, Running, Settling, Done, Fault`。RESULT 的 phase 只能是 `Done` 或 `Fault`；bit0=阀门输出命令、bit1=已满足静默窗口、bit2=结算截断。主机只接受阀门输出已关闭且未知 flag 未置位的终态。revision 随状态变化递增；普通脉冲计数变化不增加 revision。主机按 `JobKey + revision` 去重并回传 RESULT_ACK。
 
@@ -131,7 +134,7 @@ Master `LOCAL` 增加 `test_supported=1 test_active=N test_ms=N test_client=HEX 
 
 `V job=epoch:id total_ml=N measured=...`
 
-未确认转发只返回 `PENDING`，丢失响应后可重试原请求；读 TX 只能读最新一行。通知按换行拼接，不将单个 ATT 分片当作完整响应。主节点运行期间还发送 FLOW 行；其他入口目前通过 query 拉取权威汇总，没有全网遥测推送订阅。
+未确认转发只返回 `PENDING`，丢失响应后可重试原请求；读 TX 只能读最新一行。通知按换行拼接，不将单个 ATT 分片当作完整响应。任务运行期间，主节点在收到并校验从机单播 D6 后，通过现有加密 GATT 通知发送 `LIVE` 行；它只包含当前已启动任务节点的最新快照，不使用 Mesh 群组/广播，也不代替最终 FLOW/RESULT。其他入口仍通过 query 拉取权威汇总。
 
 ## Master 清单与手机组网协议（1.2.0）
 

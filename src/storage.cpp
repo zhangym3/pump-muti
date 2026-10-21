@@ -21,6 +21,11 @@ bool Storage::open(uint32_t profile) {
     if (!unicast(n.address) || n.address == state_.master || !validK(n.k) || !n.version) return false;
     for (size_t j = 0; j < i; ++j) if (state_.nodes[j].address == n.address) return false;
   }
+  // Separate additive NVS key: deployed identity, fences and result ABI are unchanged.
+  CalibrationStore saved; size_t calibrationSize = sizeof(saved);
+  const auto calibrationErr = nvs_get_blob(handle_, "speed_cal", &saved, &calibrationSize);
+  if (calibrationErr != ESP_ERR_NVS_NOT_FOUND &&
+      (calibrationErr != ESP_OK || !decodeCalibrations(&saved, calibrationSize, calibrations_))) return false;
   if (state_.epoch == UINT32_MAX) return false;
   ++state_.epoch;
   if (state_.lastJob.phase >= SchedulePhase::Preparing && state_.lastJob.phase <= SchedulePhase::Between) {
@@ -37,5 +42,29 @@ bool Storage::write(const PersistentState &next) {
   if (!verify || nvs_get_blob(handle_, "state", verify.get(), &size) != ESP_OK || size != sizeof(next) ||
       memcmp(verify.get(), &next, size)) return false;
   state_ = next; return true;
+}
+SpeedCalibration Storage::calibration(size_t slot) const {
+  if (slot >= MaxNodes) return {};
+  const auto &n = state_.nodes[slot]; const auto &c = calibrations_.nodes[slot];
+  return c.matches(n.address, n.k, n.version) ? c : SpeedCalibration{};
+}
+bool Storage::writeCalibration(size_t slot, const SpeedCalibration &value) {
+  if (!handle_ || slot >= MaxNodes || !value.valid()) return false;
+  const auto &n = state_.nodes[slot];
+  if (!value.matches(n.address, n.k, n.version)) return false;
+  auto next = calibrations_; next.nodes[slot] = value;
+  if (nvs_set_blob(handle_, "speed_cal", &next, sizeof(next)) != ESP_OK || nvs_commit(handle_) != ESP_OK) return false;
+  CalibrationStore verify; size_t size = sizeof(verify);
+  if (nvs_get_blob(handle_, "speed_cal", &verify, &size) != ESP_OK || size != sizeof(next) || memcmp(&verify, &next, size)) return false;
+  calibrations_ = next; return true;
+}
+bool Storage::clearCalibrations() {
+  if (!handle_) return false;
+  const auto err = nvs_erase_key(handle_, "speed_cal");
+  if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND) return false;
+  if (nvs_commit(handle_) != ESP_OK) return false;
+  size_t size = 0;
+  if (nvs_get_blob(handle_, "speed_cal", nullptr, &size) != ESP_ERR_NVS_NOT_FOUND) return false;
+  calibrations_ = {}; return true;
 }
 }

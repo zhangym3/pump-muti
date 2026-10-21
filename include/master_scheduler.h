@@ -2,14 +2,21 @@
 #include "valve_status.h"
 #include "pump_safety_controller.h"
 #include "mesh_tx_governor.h"
+#include "speed_calibration.h"
 namespace pump {
 struct RegisteredNode { uint16_t address = 0; uint32_t k = 5880, version = 1; };
 struct NodeRuntime {
+  struct LiveSample {
+    JobKey key;
+    uint32_t pulses = 0, runtimeMs = 0, receivedAt = 0, milliliters = 0, millilitersPerMinute = 0;
+    bool seen = false;
+  } live;
   struct LeaseRecord {
     uint32_t sequence = 0, issuedAt = 0;
     bool accepted = false, acked = false, early = false; Reply result = Reply::Unknown;
   } leases[10];
   RegisteredNode config;
+  SpeedCalibration calibration;
   ValveStatus status;
   uint32_t seenAt = 0;
   uint32_t leaseAckAt = 0, leaseAckSequence = 0;
@@ -49,6 +56,7 @@ class MasterScheduler {
   MasterScheduler(MeshSender &net, PumpSafetyController &pump, uint8_t concurrent)
     : net_(net), pump_(pump), concurrent_(concurrent) {}
   Reply registerNode(size_t slot, RegisteredNode cfg);
+  Reply setCalibration(size_t slot, const SpeedCalibration &value);
   Reply check(uint32_t mask, uint32_t ml, uint32_t maxMs, uint32_t now, const uint8_t *amounts = nullptr);
   void restore(const JobReport &report, const ValveStatus results[MaxNodes]);
   void begin(JobKey key, uint32_t mask, uint32_t ml, uint32_t maxMs, uint32_t now, const uint8_t *amounts = nullptr);
@@ -63,6 +71,7 @@ class MasterScheduler {
   bool commandReply(uint16_t source, JobKey key, Op command, Reply result, uint32_t now);
   bool result(uint16_t source, const ValveStatus &s, uint32_t now);
   bool summary(uint16_t source, JobKey key, uint32_t pulses, uint32_t revision, uint32_t now);
+  bool progress(uint16_t source, JobKey key, uint32_t pulses, uint32_t runtimeMs, uint32_t now);
   bool capabilities(uint16_t source, uint32_t nonce, uint16_t revision, uint16_t features, uint32_t buildId, uint32_t now);
   void submissions(uint32_t now);
   bool active() const;
@@ -75,6 +84,8 @@ class MasterScheduler {
   uint32_t finalMask() const { return final_; }
   VolumeReport volume() const;
  private:
+  uint32_t coefficient(size_t slot) const;
+  uint16_t features(size_t slot) const;
   void batch(uint32_t now);
   void closeBatch(Reason reason);
   MeshTxGovernor::Admission sendNode(size_t i, Op op);

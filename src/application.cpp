@@ -188,7 +188,7 @@ void Application::incoming(const Packet &p, uint32_t now) {
     const uint32_t nonce=r.u32(); const uint16_t revision=r.u16(), features=r.u16(); const uint32_t build=r.u32();
     if (r.done()) {
       const bool applied=scheduler_.capabilities(p.peer,nonce,revision,features,build,now);
-      ESP_LOGI("cap_rx", "t=%lu peer=%04x nonce=%lu protocol=%u features=%04x build=%08lx applied=%u",
+      ESP_LOGD("cap_rx", "t=%lu peer=%04x nonce=%lu protocol=%u features=%04x build=%08lx applied=%u",
         (unsigned long)now,p.peer,(unsigned long)nonce,revision,features,(unsigned long)build,applied);
     }
   } else if (p.op == Op::LeaseAck) {
@@ -199,7 +199,7 @@ void Application::incoming(const Packet &p, uint32_t now) {
     const auto &node=scheduler_.node(scheduler_.find(p.peer));
     for (const auto &v:node.leases) if (v.sequence==sequence) { matched=true; issued=v.issuedAt; }
     const bool applied=scheduler_.compactLeaseAck(p.peer,epoch,sequence,reply,now);
-    ESP_LOGI("lease_rx", "t=%lu peer=%04x epoch=%lu seq=%lu result=%s matched=%u issued=%lu age=%lu applied=%u",
+    ESP_LOGD("lease_rx", "t=%lu peer=%04x epoch=%lu seq=%lu result=%s matched=%u issued=%lu age=%lu applied=%u",
       (unsigned long)now,p.peer,(unsigned long)epoch,(unsigned long)sequence,replyName(reply),matched,
       (unsigned long)issued,(unsigned long)(matched?now-issued:0),applied);
   } else if (p.op == Op::CommandAck || p.op==Op::PrepareOK || p.op==Op::StartOK) {
@@ -208,13 +208,23 @@ void Application::incoming(const Packet &p, uint32_t now) {
     const Op command=p.op==Op::PrepareOK ? Op::Prepare : p.op==Op::StartOK ? Op::Start : Op(r.u8());
     const Reply reply=p.op==Op::CommandAck ? Reply(r.u8()) : Reply::Ok;
     const bool applied=scheduler_.commandReply(p.peer,key,command,reply,now);
-    ESP_LOGI("command_rx","t=%lu peer=%04x job=%lu:%lu command=%02x reply=%s applied=%u guard=%s",
+    ESP_LOGD("command_rx","t=%lu peer=%04x job=%lu:%lu command=%02x reply=%s applied=%u guard=%s",
       (unsigned long)now,p.peer,(unsigned long)key.epoch,(unsigned long)key.id,uint8_t(command),replyName(reply),applied,scheduler_.guard());
+  } else if (p.op==Op::Progress) {
+    if (!controlFormat(p)) return;
+    const auto key=r.key(); const uint32_t pulses=r.u32(), runtime=r.u32();
+    if (!r.done() || !scheduler_.progress(p.peer,key,pulses,runtime,now)) return;
+    const auto &live=scheduler_.node(scheduler_.find(p.peer)).live;
+    char text[192];
+    snprintf(text,sizeof(text),"LIVE addr=%04x job=%lu:%lu pulses=%lu ml=%lu runtime_ms=%lu rate_ml_min=%lu",
+      p.peer,(unsigned long)key.epoch,(unsigned long)key.id,(unsigned long)live.pulses,
+      (unsigned long)live.milliliters,(unsigned long)live.runtimeMs,(unsigned long)live.millilitersPerMinute);
+    gateway_.publishLive(text);
   } else if (p.op==Op::TargetClosed) {
     const auto key=r.key(); if (!r.done()) return;
     const bool applied=scheduler_.targetClosed(p.peer,key,now);
     if (applied) { auto ack=packet(Op::TargetClosedAck,p.peer); Writer w{ack}; w.key(key); mesh_.send(ack); }
-    ESP_LOGI("closed_rx","t=%lu peer=%04x job=%lu:%lu applied=%u pump=%u",
+    ESP_LOGD("closed_rx","t=%lu peer=%04x job=%lu:%lu applied=%u pump=%u",
       (unsigned long)now,p.peer,(unsigned long)key.epoch,(unsigned long)key.id,applied,pump_.output());
   } else if (p.op == Op::CommissionReply) {
     const uint32_t request = r.u32(); const uint8_t rawReply = r.u8(), configured = r.u8();
@@ -291,15 +301,15 @@ void Application::pumpTestReply(const ControlRequest &q, Reply result, uint32_t 
   gateway_.publish(text); localState(now); pumpPwmState();
 }
 void Application::command(CommandLine &line, uint32_t now) {
-  char *tokens[10] = {}; size_t count = 0; char *save = nullptr;
+  char *tokens[12] = {}; size_t count = 0; char *save = nullptr;
   for (char *p = strtok_r(line.text, " \t", &save); p; p = strtok_r(nullptr, " \t", &save)) {
-    if (count == 10) { gateway_.publish("INVALID too_many_fields"); return; } tokens[count++] = p;
+    if (count == 12) { gateway_.publish("INVALID too_many_fields"); return; } tokens[count++] = p;
   }
   if (!count) return;
   auto number = [&](size_t index, uint64_t &v, unsigned base = 10) { return index < count && unsignedNumber(tokens[index], v, base); };
   const char *op = tokens[0];
   if (!strcmp(op, "hello") && count == 1) {
-    char text[192]; snprintf(text, sizeof(text), "HELLO role=%s addr=%04x master=%04x epoch=%lu mesh=%u commissioned=%u pump_fault=%s individual=1 build=%08lx tx_healthy=%u",
+    char text[192]; snprintf(text, sizeof(text), "HELLO role=%s addr=%04x master=%04x epoch=%lu mesh=%u commissioned=%u pump_fault=%s individual=1 build=%08lx tx_healthy=%u calibration=1",
       "PUMP_MASTER", mesh_.address(), store_.state().master,
       static_cast<unsigned long>(store_.state().epoch), mesh_.ready(),
       board::pumpConfig().valid(), pumpFaultName(pump_.fault()),(unsigned long)PUMP_BUILD_ID,mesh_.healthy()); gateway_.publish(text); return;
@@ -308,6 +318,42 @@ void Application::command(CommandLine &line, uint32_t now) {
     localState(now); pumpPwmState(); meshState(); return;
   }
   if (!strcmp(op, "mesh-diag") && count == 1) { meshState(); return; }
+  if (!strcmp(op, "cal-get") || !strcmp(op, "cal-set")) {
+    const bool write = !strcmp(op, "cal-set");
+    uint64_t epoch=0, request=0, slot=0, address=0, revision=0, baseK=0, baseVersion=0, low=0, medium=0, high=0;
+    if (count != (write ? 11U : 5U) || !number(1,epoch) || !epoch || epoch>UINT32_MAX ||
+        !number(2,request) || !request || request>UINT32_MAX || !number(3,slot) || slot<1 || slot>MaxNodes ||
+        !number(4,address,16) || !unicast(address) || address>0x7fff ||
+        (write && (!number(5,revision) || revision>UINT32_MAX || !number(6,baseK) || !number(7,baseVersion) ||
+          !baseVersion || baseVersion>UINT32_MAX || baseK>1000000 || !validK(baseK) ||
+          !number(8,low) || !number(9,medium) || !number(10,high) || low>1000000 || medium>1000000 || high>1000000 ||
+          !validK(low) || !validK(medium) || !validK(high)))) {
+      gateway_.publish("INVALID calibration_fields"); return;
+    }
+    const size_t index = size_t(slot-1);
+    auto reply = [&](Reply result) { calibrationState(uint32_t(request), index, result); };
+    const auto &cfg = store_.state().nodes[index];
+    if (epoch != store_.state().epoch || address != cfg.address) { reply(Reply::Stale); return; }
+    if (!storageHealthy_) { reply(Reply::Storage); return; }
+    if (!mesh_.ownsSlave(cfg.address)) { reply(Reply::Unauthorized); return; }
+    if (!write) { reply(Reply::Ok); return; }
+    if (baseK != cfg.k || baseVersion != cfg.version) { reply(Reply::Stale); return; }
+    if (!idle() || pump_.testing() || commission_.active || store_.state().lastJob.unknown || mesh_.managementBusy()) {
+      reply(Reply::Busy); return;
+    }
+    auto current = store_.calibration(index);
+    if (revision != current.revision || revision == UINT32_MAX) { reply(Reply::Stale); return; }
+    SpeedCalibration value; value.address=cfg.address; value.baseK=cfg.k; value.baseVersion=cfg.version;
+    value.revision=uint32_t(revision)+1; value.low=uint32_t(low); value.medium=uint32_t(medium); value.high=uint32_t(high);
+    const auto &node = scheduler_.node(index);
+    if (node.config.address!=cfg.address || node.config.k!=cfg.k || node.config.version!=cfg.version ||
+        node.status.valveCommand || (node.status.phase>=Phase::Prepared && node.status.phase<=Phase::Settling)) {
+      reply(Reply::NotReady); return;
+    }
+    if (!store_.writeCalibration(index,value)) { storageHealthy_=false; reply(Reply::Storage); return; }
+    if (scheduler_.setCalibration(index,value)!=Reply::Ok) { storageHealthy_=false; reply(Reply::Storage); return; }
+    reply(Reply::Ok); return;
+  }
   if (!strcmp(op, "pump-speed")) {
     uint64_t epoch = 0, revision = 0, level = 0;
     if (count != 4 || !number(1, epoch) || !epoch || epoch > UINT32_MAX ||
@@ -494,7 +540,12 @@ void Application::command(CommandLine &line, uint32_t now) {
     if (old >= 0 && size_t(old) != slot - 1) { gateway_.publish("CONFLICT node_address"); return; }
     auto next = store_.state(); next.nodes[slot - 1] = {uint16_t(address), uint32_t(k), uint32_t(ver)};
     if (!store_.write(next)) { storageHealthy_ = false; gateway_.publish("STORAGE"); return; }
-    gateway_.publish(replyName(scheduler_.registerNode(slot - 1, {uint16_t(address), uint32_t(k), uint32_t(ver)}))); return;
+    const auto registered = scheduler_.registerNode(slot - 1, {uint16_t(address), uint32_t(k), uint32_t(ver)});
+    if (registered == Reply::Ok) {
+      const auto calibration = store_.calibration(slot - 1);
+      if (calibration.valid()) scheduler_.setCalibration(slot - 1, calibration);
+    }
+    gateway_.publish(replyName(registered)); return;
   }
   if (!strcmp(op, "master") && count == 2) {
     uint64_t address;
@@ -511,6 +562,17 @@ void Application::command(CommandLine &line, uint32_t now) {
     gateway_.publish("OK pin_saved restart_required"); return;
   }
   gateway_.publish("HELP hello | start CLIENThex SEQ EPOCH MASKhex ML MAX_MS | stop CLIENThex SEQ EPOCH JOB_EPOCH JOB_ID | query CLIENThex SEQ | mesh-reset CONFIRM");
+}
+void Application::calibrationState(uint32_t request, size_t slot, Reply reply) {
+  if (slot >= MaxNodes) return;
+  const auto &cfg = store_.state().nodes[slot]; auto value = store_.calibration(slot);
+  if (!value.valid()) value.low = value.medium = value.high = cfg.k;
+  char line[192];
+  snprintf(line,sizeof(line),"CAL epoch=%lu req=%lu slot=%u addr=%04x rev=%lu bk=%lu bv=%lu low=%lu mid=%lu high=%lu reply=%s",
+    (unsigned long)store_.state().epoch,(unsigned long)request,unsigned(slot+1),cfg.address,
+    (unsigned long)value.revision,(unsigned long)cfg.k,(unsigned long)cfg.version,
+    (unsigned long)value.low,(unsigned long)value.medium,(unsigned long)value.high,replyName(reply));
+  gateway_.publish(line);
 }
 void Application::meshState(uint32_t request) {
   const auto &s=mesh_.management(); char line[192];
@@ -564,7 +626,7 @@ void Application::periodic(uint32_t now) {
     } else if (!strcmp(meshState.phase, "RESET_DONE")) {
       auto next = store_.state();
       for (auto &node : next.nodes) node = {};
-      if (!store_.write(next)) {
+      if (!store_.clearCalibrations() || !store_.write(next)) {
         storageHealthy_ = false; meshResetPending_ = false; gateway_.publish("MESH_RESET_FAILED");
       } else {
         meshResetPending_ = false; gateway_.publish("OK mesh_reset rebooting");
@@ -584,12 +646,12 @@ void Application::periodic(uint32_t now) {
   }
   if (report.phase != lastPhase_ || strcmp(lastGuard_,scheduler_.guard())!=0) {
     lastGuard_=scheduler_.guard();
-    ESP_LOGI("start_guard","t=%lu job=%lu:%lu phase=%u guard=%s closed=%08lx final=%08lx",
+    ESP_LOGD("start_guard","t=%lu job=%lu:%lu phase=%u guard=%s closed=%08lx final=%08lx",
       (unsigned long)now,(unsigned long)report.key.epoch,(unsigned long)report.key.id,unsigned(report.phase),lastGuard_,
       (unsigned long)scheduler_.closedMask(),(unsigned long)scheduler_.finalMask());
     for(size_t i=0;i<MaxNodes;++i) if(report.selected & (uint32_t(1)<<i)) {
       const auto &n=scheduler_.node(i);
-      ESP_LOGI("start_proof","peer=%04x start=%lu start_ack=%lu lease=%lu seq=%lu proof_age=%lu accepted=%u",
+      ESP_LOGD("start_proof","peer=%04x start=%lu start_ack=%lu lease=%lu seq=%lu proof_age=%lu accepted=%u",
         n.config.address,(unsigned long)n.firstStartIssuedAt,(unsigned long)n.startAckAt,
         (unsigned long)n.leaseAckAt,(unsigned long)n.leaseAckSequence,
         (unsigned long)(n.leaseAckSeen?now-n.leaseAckAt:0),n.commandAccepted);
@@ -610,6 +672,7 @@ void Application::run() {
   esp_task_wdt_add(nullptr);
   ESP_LOGI("build", "id=%08lx protocol=%u features=%04x tracked=1 max_concurrent=%u",(unsigned long)PUMP_BUILD_ID,ProtocolRevision,RequiredFeatures,board::MaxConcurrent);
   uint32_t previousTick=nowMs(), maxTick=0, diagnosticAt=previousTick;
+  uint32_t reportedMeshFaults=0;
   bool previousOutput=false;
   char ready[192];
   snprintf(ready, sizeof(ready), "PUMP_MULTI_V1 ready role=%s commissioned=%u; type hello or local",
@@ -623,11 +686,14 @@ void Application::run() {
     if (interval>maxTick) maxTick=interval;
     if (elapsed(now,diagnosticAt,10000)) {
       const auto m=mesh_.metrics(); diagnosticAt=now;
-      ESP_LOGI("mesh_diag", "healthy=%u submitted=%lu ended=%lu merged=%lu expired=%lu faults=%lu hello_timeout=%lu peak_sar=%u peak_pending=%u sar_max_ms=%lu tick_max_ms=%lu trace_lost=%lu",
+      ESP_LOGD("mesh_diag", "healthy=%u submitted=%lu ended=%lu merged=%lu expired=%lu faults=%lu hello_timeout=%lu peak_sar=%u peak_pending=%u sar_max_ms=%lu tick_max_ms=%lu trace_lost=%lu",
         mesh_.healthy(),(unsigned long)m.submitted,(unsigned long)m.ended,(unsigned long)m.merged,(unsigned long)m.expired,
         (unsigned long)m.faults,(unsigned long)m.helloTimeouts,m.peakSar,m.peakPending,(unsigned long)m.maxSarMs,(unsigned long)maxTick,(unsigned long)m.traceLost);
-      publishMeshDiagnostics(mesh_.diagnostics(),mesh_.healthy(),[](const char *line) { ESP_LOGI("mesh_state","%s",line); });
-      ESP_LOGI("runtime_mem", "heap_free=%lu heap_min=%lu largest_free=%lu app_stack_min_bytes=%lu btc_stack_min_bytes=%lu",
+      if (m.faults != reportedMeshFaults) {
+        reportedMeshFaults=m.faults;
+        publishMeshDiagnostics(mesh_.diagnostics(),mesh_.healthy(),[](const char *line) { ESP_LOGW("mesh_state","%s",line); });
+      }
+      ESP_LOGD("runtime_mem", "heap_free=%lu heap_min=%lu largest_free=%lu app_stack_min_bytes=%lu btc_stack_min_bytes=%lu",
         (unsigned long)esp_get_free_heap_size(),(unsigned long)esp_get_minimum_free_heap_size(),
         (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
         (unsigned long)uxTaskGetStackHighWaterMark(nullptr),

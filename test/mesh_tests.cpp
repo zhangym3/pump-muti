@@ -231,10 +231,12 @@ struct Bench {
   std::vector<Flight> flights;
   uint32_t now=100,seed=1; unsigned count; bool dropAck=false,dropResultAck=false,missingEnd=false,duplicate=false;
   bool dropResultsUntilQuery=false; unsigned summaryFrames=0,resultQueries=0,resultAcks=0;
+  unsigned progressFrames=0,progressApplied=0;
   static constexpr uint32_t SlowSarMs=3200;
   int slow=-1; uint32_t sarMs=65, ackDelay=0;
   uint32_t startReplyDelay=0, acceptedDelay=0, prepareLife=0, jitter=0, pulsesPerTick=3;
   bool rejectStart=false, rejectLease=false, randomLoss=false, dropClosed=false,dropClosedAck=false;
+  uint16_t supportedFeatures=RequiredFeatures;
   unsigned preparations=0,leaseApplied=0,lossCount=0,lossBudget=1; uint32_t oldestApplied=0;
   std::array<bool,256> lost{}; uint32_t lastLease[5]={};
   uint32_t firstStart=0,pumpStartedAt=0,lastClosedAt=0;
@@ -253,7 +255,7 @@ struct Bench {
         if(p.peer!=i+2 && p.peer!=AllSlaves)continue;
         auto incoming=p; incoming.peer=1;
         auto &s=*slaves[i]; Reader v{p};
-        if(p.op==Op::CapabilitiesGet){auto reply=packet(Op::Capabilities,1);Writer w{reply};w.u32(v.u32());w.u16(ProtocolRevision);w.u16(RequiredFeatures);w.u32(TestSlaveBuildId);enqueue(i,reply);}
+        if(p.op==Op::CapabilitiesGet){auto reply=packet(Op::Capabilities,1);Writer w{reply};w.u32(v.u32());w.u16(ProtocolRevision);w.u16(supportedFeatures);w.u32(TestSlaveBuildId);enqueue(i,reply);}
         else if(s.session.handle(incoming,now,s.tx.healthy(),true,[&](const Packet &out){ return s.tx.enqueue(out,now); },[&](uint16_t peer,JobKey key,Op op){s.tx.retire(peer,key,op);})) {
           if(duplicate && p.op==Op::Start) s.session.handle(incoming,now,s.tx.healthy(),true,[&](const Packet &out){return s.tx.enqueue(out,now);},[&](uint16_t peer,JobKey key,Op op){s.tx.retire(peer,key,op);});
         }
@@ -273,6 +275,7 @@ struct Bench {
         ++leaseApplied; const auto age=now-scheduler.node(unsigned(f.from)).leaseAckAt;
         if(age>oldestApplied) oldestApplied=age;
       }}
+      else if(p.op==Op::Progress){const auto key=r.key();const auto pulses=r.u32(),runtime=r.u32();if(r.done() && scheduler.progress(source,key,pulses,runtime,now))++progressApplied;}
       else if(p.op==Op::Hello){const auto k=r.u32(),version=r.u32();const bool commissioned=r.u8()==1;const auto build=r.u32();CHECK(r.done());scheduler.hello(source,k,version,commissioned,now,build);}
     }
   }
@@ -280,6 +283,7 @@ struct Bench {
     MeshTxGovernor::Trace trace;while(g.takeTrace(trace)){}
     MeshTxGovernor::Dispatch d;if(!g.next(now,d))return;
     if(d.packet.op==Op::Summary)++summaryFrames;
+    if(from>=0 && d.packet.op==Op::Progress)++progressFrames;
     const uint32_t delay=20+(random()%5)*5+(jitter?random()%(jitter+1):0);
     uint32_t life=(from==slow && slow>=0)?SlowSarMs:sarMs;
     if(from<0 && d.packet.op==Op::Prepare && prepareLife) life=prepareLife;
@@ -304,7 +308,9 @@ struct Bench {
     now+=5;link.now=now;pump.tick(now);scheduler.submissions(now);
     for(unsigned i=0;i<count;++i){
       auto &s=*slaves[i]; if(io.on && s.io.on){s.io.reading.pulses+=pulsesPerTick;s.io.reading.lastMs=now;}
-      s.valve.tick(now);s.session.poll(1,i,now,[&](const Packet &p){return s.tx.enqueue(p,now);});drain(s.tx,now);
+      s.valve.tick(now);
+      if(!s.valve.status().valveCommand)s.tx.retire(1,s.valve.status().key,Op::Progress);
+      s.session.poll(1,i,now,[&](const Packet &p){return s.tx.enqueue(p,now);});drain(s.tx,now);
       if(!s.tx.healthy())s.valve.emergency(Reason::Transport,now);
       const auto v=s.valve.status();
       if(s.sentKey!=v.key || s.sent!=v.revision){s.sentKey=v.key;s.sent=v.revision;s.at=now-1000;s.attempts=0;}
@@ -442,4 +448,30 @@ void recovery_link_runs() {
 }
 
 #include "v4_tests.inc"
-int main(){v4_matrix();governor_matrix();governor_recovery_matrix();recovery_link_runs();joint_runs();return 0;}
+#include "live_tests.inc"
+void calibrated_link_runs() {
+  for(uint8_t level=1;level<=3;++level) {
+    Bench b(5); b.supportedFeatures=RequiredFeatures|JobCalibrationFeature;
+    CHECK(b.pump.setSpeed(level,b.now)==Reply::Ok);
+    for(size_t i=0;i<5;++i) {
+      SpeedCalibration c; c.address=uint16_t(i+2); c.baseK=5880; c.baseVersion=1; c.revision=1;
+      c.low=4000+uint32_t(i)*100; c.medium=5000+uint32_t(i)*100; c.high=6000+uint32_t(i)*100;
+      CHECK(b.scheduler.setCalibration(i,c)==Reply::Ok);
+    }
+    b.duplicate=true; b.dropResultAck=true; b.begin(1); b.finish();
+    CHECK(b.scheduler.report().phase==SchedulePhase::Complete && b.summaryFrames==0);
+    for(size_t i=0;i<5;++i) {
+      const auto status=b.slaves[i]->valve.status();
+      const auto k=(level==1?4000U:level==2?5000U:6000U)+uint32_t(i)*100;
+      CHECK(status.k==k && status.pulses>=k/2 && status.reason==Reason::Target && status.quiet);
+      CHECK(b.slaves[i]->valve.config().k==5880 && b.slaves[i]->valve.config().version==1);
+    }
+    b.clean();
+  }
+  Bench legacy(1); SpeedCalibration c; c.address=2; c.baseK=5880; c.baseVersion=1; c.revision=1;
+  c.low=c.medium=c.high=5000; CHECK(legacy.scheduler.setCalibration(0,c)==Reply::Ok);
+  legacy.begin(1); legacy.finish();
+  CHECK(legacy.scheduler.stopReason()==Reason::Protocol && !legacy.pumpStartedAt && !legacy.preparations);
+  std::puts("PASS calibrated three speeds x five nodes, final K snapshot, duplicate/drop ACK and old slave rejected before PREPARE");
+}
+int main(){progress_governor();live_link_runs();calibrated_link_runs();v4_matrix();governor_matrix();governor_recovery_matrix();recovery_link_runs();joint_runs();return 0;}

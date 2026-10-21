@@ -1,0 +1,92 @@
+Hard resetting via RTS pin...
+--- forcing DTR inactive
+--- forcing RTS inactive
+--- Terminal on COM4 | 115200 8-N-1
+--- Available filters and text transformations: debug, default, direct, esp32_exception_decoder, hexlify, log2file, nocontrol, printable, send_on_enter, time
+--- More details at https://bit.ly/pio-monitor-filters
+--- Quit: Ctrl+C | Menu: Ctrl+T | Help: Ctrl+T followed by Ctrl+H
+I (1551) mesh_tx: t=1279 ticket=2 peer=0001 op=ca event=0 job=5880:1 seq=0 rev=0 issued=1279 age=0 queued=1279 wait=0 seg=1 err=0
+I (1553) mesh_tx: t=1282 ticket=2 peer=0001 op=ca event=1 job=5880:1 seq=0 rev=0 issued=1279 age=3 queued=1279 wait=0 seg=1 err=0
+I (1698) mesh_tx: t=1428 ticket=2 peer=0001 op=ca event=3 job=5880:1 seq=0 rev=0 issued=1279 age=149 queued=1279 wait=0 seg=1 err=0
+I (10508) mesh_diag: healthy=1 submitted=2 ended=2 merged=0 expired=0 faults=0 hello_timeout=0 peak_sar=1 peak_pending=1 sar_max_ms=173 tick_max_ms=36 trace_lost=0
+I (10510) mesh_state: MESH_STATE healthy=1 diagnostic_ready=0 restart_required=0 in_flight=0 pending=0 backoff_ms=0
+I (10511) runtime_mem: heap_free=134892 heap_min=116668 largest_free=94208 app_stack_min_bytes=14292
+I (10513) runtime_mem: mesh_stack_min_bytes=2020
+I (11556) mesh_tx: t=11279 ticket=3 peer=0001 op=ca event=0 job=5880:1 seq=0 rev=0 issued=11279 age=0 queued=11279 wait=0 seg=1 err=0
+I (11558) mesh_tx: t=11286 ticket=3 peer=0001 op=ca event=1 job=5880:1 seq=0 rev=0 issued=11279 age=7 queued=11279 wait=0 seg=1 err=0
+I (11733) mesh_tx: t=11463 ticket=3 peer=0001 op=ca event=3 job=5880:1 seq=0 rev=0 issued=11279 age=184 queued=11279 wait=0 seg=1 err=0
+I (20508) mesh_diag: healthy=1 submitted=3 ended=3 merged=0 expired=0 faults=0 hello_timeout=0 peak_sar=1 peak_pending=1 sar_max_ms=184 tick_max_ms=36 trace_lost=0
+I (20510) mesh_state: MESH_STATE healthy=1 diagnostic_ready=0 restart_required=0 in_flight=0 pending=0 backoff_ms=0
+I (20511) runtime_mem: heap_free=134892 heap_min=116668 largest_free=94208 app_stack_min_bytes=14292
+I (20513) runtime_mem: mesh_stack_min_bytes=2020
+I (21555) mesh_tx: t=21279 ticket=4 peer=0001 op=ca event=0 job=5880:1 seq=0 rev=0 issued=21279 age=0 queued=21279 wait=0 seg=1 err=0
+I (21558) mesh_tx: t=21286 ticket=4 peer=0001 op=ca event=1 job=5880:1 seq=0 rev=0 issued=21279 age=7 queued=21279 wait=0 seg=1 err=0
+I (22317) mesh_tx: t=22047 ticket=4 peer=0001 op=ca event=3 job=5880:1 seq=0 rev=0 issued=21279 age=768 queued=21279 wait=0 seg=1 err=0
+I (26791) mesh_tx: t=26520 ticket=5 peer=0001 op=d4 event=0 job=315:87 seq=0 rev=0 issued=26520 age=0 queued=26519 wait=1 seg=0 err=0
+I (26793) mesh_tx: t=26521 ticket=5 peer=0001 op=d4 event=1 job=315:87 seq=0 rev=0 issued=26520 age=1 queued=26519 wait=1 seg=0 err=0
+I (26923) output: t=26653 command=1
+I (26932) mesh_tx: t=26656 ticket=6 peer=0001 op=d5 event=0 job=315:87 seq=0 rev=0 issued=26656 age=0 queued=26654 wait=2 seg=0 err=0
+I (26934) mesh_tx: t=26662 ticket=6 peer=0001 op=d5 event=1 job=315:87 seq=0 rev=0 issued=26656 age=6 queued=26654 wait=2 seg=0 err=0
+HALL t=26654 event=start pin=5 level=1 raw=0 delta=0 dt_ms=26416 last_ms=0
+HALL_JOB t=26654 job=315:87 phase=OPEN_COMMAND_SENT reason=NONE valve=1 job_pulses=0 job_ml=0
+HALL t=27658 event=sample pin=5 level=1 raw=0 delta=0 dt_ms=1004 last_ms=0
+HALL_JOB t=27658 job=315:87 phase=OPEN_COMMAND_SENT reason=NONE valve=1 job_pulses=0 job_ml=0
+I (28434) mesh_tx: t=28158 ticket=7 peer=0001 op=d5 event=0 job=315:87 seq=0 rev=0 issued=28158 age=0 queued=28157 wait=1 seg=0 err=0
+I (28436) mesh_tx: t=28164 ticket=7 peer=0001 op=d5 event=1 job=315:87 seq=0 rev=0 issued=28158 age=6 queued=28157 wait=1 seg=0 err=0
+I (28523) mesh_tx: t=28247 ticket=8 peer=0001 op=ce event=0 job=315:87 seq=36 rev=0 issued=28247 age=0 queued=28247 wait=0 seg=0 err=0
+I (28525) mesh_tx: t=28253 ticket=8 peer=0001 op=ce event=1 job=315:87 seq=36 rev=0 issued=28247 age=6 queued=28247 wait=0 seg=0 err=0
+HALL t=28658 event=sample pin=5 level=1 raw=0 delta=0 dt_ms=1000 last_ms=0
+HALL_JOB t=28658 job=315:87 phase=OPEN_COMMAND_SENT reason=NONE valve=1 job_pulses=0 job_ml=0
+I (29597) mesh_tx: t=29321 ticket=9 peer=0001 op=ce event=0 job=315:87 seq=37 rev=0 issued=29321 age=0 queued=29321 wait=0 seg=0 err=0
+I (29599) mesh_tx: t=29327 ticket=9 peer=0001 op=ce event=1 job=315:87 seq=37 rev=0 issued=29321 age=6 queued=29321 wait=0 seg=0 err=0
+HALL t=29658 event=sample pin=5 level=1 raw=0 delta=0 dt_ms=1000 last_ms=0
+HALL_JOB t=29658 job=315:87 phase=OPEN_COMMAND_SENT reason=NONE valve=1 job_pulses=0 job_ml=0
+I (30508) mesh_diag: healthy=1 submitted=9 ended=4 merged=0 expired=0 faults=0 hello_timeout=0 peak_sar=1 peak_pending=1 sar_max_ms=768 tick_max_ms=36 trace_lost=0
+I (30510) mesh_state: MESH_STATE healthy=1 diagnostic_ready=0 restart_required=0 in_flight=0 pending=0 backoff_ms=0
+I (30511) runtime_mem: heap_free=134764 heap_min=116668 largest_free=94208 app_stack_min_bytes=13940
+I (30513) runtime_mem: mesh_stack_min_bytes=2020
+HALL t=30658 event=sample pin=5 level=1 raw=0 delta=0 dt_ms=1000 last_ms=0
+HALL_JOB t=30658 job=315:87 phase=OPEN_COMMAND_SENT reason=NONE valve=1 job_pulses=0 job_ml=0
+I (31565) mesh_tx: t=31279 ticket=10 peer=0001 op=ca event=0 job=5880:1 seq=0 rev=0 issued=31279 age=0 queued=31279 wait=0 seg=1 err=0
+I (31567) mesh_tx: t=31295 ticket=10 peer=0001 op=ca event=1 job=5880:1 seq=0 rev=0 issued=31279 age=16 queued=31279 wait=0 seg=1 err=0
+I (31575) mesh_tx: t=31304 ticket=11 peer=0001 op=ce event=0 job=315:87 seq=38 rev=0 issued=31304 age=0 queued=31296 wait=8 seg=0 err=0
+I (31577) mesh_tx: t=31306 ticket=11 peer=0001 op=ce event=1 job=315:87 seq=38 rev=0 issued=31304 age=2 queued=31296 wait=8 seg=0 err=0
+I (31716) mesh_tx: t=31446 ticket=10 peer=0001 op=ca event=3 job=5880:1 seq=0 rev=0 issued=31279 age=167 queued=31279 wait=0 seg=1 err=0
+I (31923) output: t=31653 command=0
+HALL t=31658 event=sample pin=5 level=1 raw=0 delta=0 dt_ms=1000 last_ms=0
+HALL_JOB t=31658 job=315:87 phase=SETTLING reason=NO_FLOW valve=0 job_pulses=0 job_ml=0
+HALL t=32153 event=final pin=5 level=1 raw=0 delta=0 dt_ms=495 last_ms=0
+HALL_JOB t=32153 job=315:87 phase=FAULT reason=NO_FLOW valve=0 job_pulses=0 job_ml=0
+I (32462) mesh_tx: t=32184 ticket=12 peer=0001 op=c5 event=0 job=315:87 seq=0 rev=1348 issued=32184 age=0 queued=32184 wait=0 seg=1 err=0
+I (32464) mesh_tx: t=32192 ticket=12 peer=0001 op=c5 event=1 job=315:87 seq=0 rev=1348 issued=32184 age=8 queued=32184 wait=0 seg=1 err=0
+I (33721) mesh_tx: t=33451 ticket=12 peer=0001 op=c5 event=3 job=315:87 seq=0 rev=1348 issued=32184 age=1267 queued=32184 wait=0 seg=1err=0
+I (33735) mesh_tx: t=33459 ticket=13 peer=0001 op=ce event=0 job=315:87 seq=39 rev=0 issued=33459 age=0 queued=32294 wait=1165 seg=1 err=0
+I (33737) mesh_tx: t=33466 ticket=13 peer=0001 op=ce event=1 job=315:87 seq=39 rev=0 issued=33459 age=7 queued=32294 wait=1165 seg=1 err=0
+I (33943) mesh_tx: t=33665 ticket=13 peer=0001 op=ce event=3 job=315:87 seq=39 rev=0 issued=33459 age=206 queued=32294 wait=1165 seg=1err=0
+I (33945) mesh_tx: t=33666 ticket=14 peer=0001 op=c5 event=0 job=315:87 seq=0 rev=1348 issued=33666 age=0 queued=33214 wait=452 seg=1 err=0
+I (33946) mesh_tx: t=33674 ticket=14 peer=0001 op=c5 event=1 job=315:87 seq=0 rev=1348 issued=33666 age=8 queued=33214 wait=452 seg=1 err=0
+I (34724) mesh_tx: t=34446 ticket=14 peer=0001 op=c5 event=3 job=315:87 seq=0 rev=1348 issued=33666 age=780 queued=33214 wait=452 seg=1 err=0
+I (34726) mesh_tx: t=34446 ticket=15 peer=0001 op=ce event=0 job=315:87 seq=40 rev=0 issued=34446 age=0 queued=33293 wait=1153 seg=1 err=0
+I (34727) mesh_tx: t=34454 ticket=15 peer=0001 op=ce event=1 job=315:87 seq=40 rev=0 issued=34446 age=8 queued=33293 wait=1153 seg=1 err=0
+I (34948) mesh_tx: t=34678 ticket=15 peer=0001 op=ce event=3 job=315:87 seq=40 rev=0 issued=34446 age=232 queued=33293 wait=1153 seg=1err=0
+I (40508) mesh_diag: healthy=1 submitted=15 ended=9 merged=1 expired=0 faults=0 hello_timeout=0 peak_sar=1 peak_pending=3 sar_max_ms=1267 tick_max_ms=36 trace_lost=0
+I (40510) mesh_state: MESH_STATE healthy=1 diagnostic_ready=0 restart_required=0 in_flight=0 pending=0 backoff_ms=0
+I (40511) runtime_mem: heap_free=134760 heap_min=116668 largest_free=94208 app_stack_min_bytes=13940
+I (40513) runtime_mem: mesh_stack_min_bytes=2020
+I (41557) mesh_tx: t=41279 ticket=16 peer=0001 op=ca event=0 job=5880:1 seq=0 rev=0 issued=41279 age=0 queued=41279 wait=0 seg=1 err=0
+I (41559) mesh_tx: t=41287 ticket=16 peer=0001 op=ca event=1 job=5880:1 seq=0 rev=0 issued=41279 age=8 queued=41279 wait=0 seg=1 err=0
+I (41692) mesh_tx: t=41422 ticket=16 peer=0001 op=ca event=3 job=5880:1 seq=0 rev=0 issued=41279 age=143 queued=41279 wait=0 seg=1 err=0
+I (50510) mesh_diag: healthy=1 submitted=16 ended=10 merged=1 expired=0 faults=0 hello_timeout=0 peak_sar=1 peak_pending=3 sar_max_ms=1267 tick_max_ms=36 trace_lost=0
+I (50513) mesh_state: MESH_STATE healthy=1 diagnostic_ready=0 restart_required=0 in_flight=0 pending=0 backoff_ms=0
+I (50514) runtime_mem: heap_free=134756 heap_min=116668 largest_free=94208 app_stack_min_bytes=13940
+I (50516) runtime_mem: mesh_stack_min_bytes=2020
+I (51559) mesh_tx: t=51282 ticket=17 peer=0001 op=ca event=0 job=5880:1 seq=0 rev=0 issued=51282 age=0 queued=51279 wait=3 seg=1 err=0
+I (51561) mesh_tx: t=51290 ticket=17 peer=0001 op=ca event=1 job=5880:1 seq=0 rev=0 issued=51282 age=8 queued=51279 wait=3 seg=1 err=0
+I (51718) mesh_tx: t=51448 ticket=17 peer=0001 op=ca event=3 job=5880:1 seq=0 rev=0 issued=51282 age=166 queued=51279 wait=3 seg=1 err=0
+I (60514) mesh_diag: healthy=1 submitted=17 ended=11 merged=1 expired=0 faults=0 hello_timeout=0 peak_sar=1 peak_pending=3 sar_max_ms=1267 tick_max_ms=36 trace_lost=0
+I (60517) mesh_state: MESH_STATE healthy=1 diagnostic_ready=0 restart_required=0 in_flight=0 pending=0 backoff_ms=0
+I (60518) runtime_mem: heap_free=134756 heap_min=116668 largest_free=94208 app_stack_min_bytes=13940
+I (60520) runtime_mem: mesh_stack_min_bytes=2020
+I (61559) mesh_tx: t=61281 ticket=18 peer=0001 op=ca event=0 job=5880:1 seq=0 rev=0 issued=61281 age=0 queued=61279 wait=2 seg=1 err=0
+I (61561) mesh_tx: t=61289 ticket=18 peer=0001 op=ca event=1 job=5880:1 seq=0 rev=0 issued=61281 age=8 queued=61279 wait=2 seg=1 err=0
+I (61701) mesh_tx: t=61431 ticket=18 peer=0001 op=ca event=3 job=5880:1 seq=0 rev=0 issued=61281 age=150 queued=61279 wait=2 seg=1 err=0

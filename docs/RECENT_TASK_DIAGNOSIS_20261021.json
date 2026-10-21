@@ -1,0 +1,188 @@
+{
+  "date": "2026-10-21",
+  "scope": "read-only diagnosis; task 315:83 was started by user during capture",
+  "capture": {
+    "path": ".pio/diagnostics/recent-tasks-20261021-080910/serial.jsonl",
+    "start_utc": "2026-10-21T00:09:10.799762+00:00",
+    "end_utc": "2026-10-21T00:10:40.969792+00:00",
+    "serial_summary": [
+      {
+        "source": "COM3",
+        "lines": 212,
+        "queries_sent": 4,
+        "error": null
+      },
+      {
+        "source": "COM4",
+        "lines": 112,
+        "queries_sent": 3,
+        "error": null
+      }
+    ],
+    "known_limitations": [
+      "COM3 has initial garbled/repeated data and timeout-split lines",
+      "raw analyzer reports one incomplete mesh_tx line for idle HelloReply ticket 134",
+      "host log receipt timestamps and phone update timestamps are not synchronized event clocks",
+      "trace_lost=0 does not certify complete serial capture or radio delivery"
+    ]
+  },
+  "firmware": [
+    {
+      "repository": "pump-muti",
+      "build_id": "25b3a54b",
+      "inputs_checked": 37,
+      "input_mismatches": []
+    },
+    {
+      "repository": "pump-muti-slave",
+      "build_id": "586bb591",
+      "inputs_checked": 32,
+      "input_mismatches": []
+    }
+  ],
+  "phone_tasks": [
+    {
+      "job": "315:76",
+      "updated_beijing": "2026-10-21T08:04:00.693+08:00",
+      "task": "start f54e16b40338100c 1 315 00000001 500 60000",
+      "report": "R client=f54e16b40338100c seq=1 reply=OK job=315:76 phase=7 mask=1 done=1 failed=1 unknown=0 reason=LEASE",
+      "flow": "FLOW addr=2 job=315:76 pulses=0 ml=0 phase=FAULT revision=1332 terminal=1 measured=1 reason=NO_FLOW",
+      "outcome": "FINISHED"
+    },
+    {
+      "job": "315:77",
+      "updated_beijing": "2026-10-21T08:04:10.173+08:00",
+      "task": "start f54e16b40338100c 2 315 00000001 500 60000",
+      "report": "R client=f54e16b40338100c seq=2 reply=OK job=315:77 phase=7 mask=1 done=1 failed=1 unknown=0 reason=TRANSPORT",
+      "flow": "FLOW addr=2 job=315:77 pulses=0 ml=0 phase=FAULT revision=1332 terminal=1 measured=1 reason=TRANSPORT",
+      "outcome": "FINISHED"
+    },
+    {
+      "job": "315:78",
+      "updated_beijing": "2026-10-21T08:04:28.196+08:00",
+      "task": "start f54e16b40338100c 3 315 00000001 500 60000",
+      "report": "R client=f54e16b40338100c seq=3 reply=OK job=315:78 phase=7 mask=1 done=1 failed=1 unknown=0 reason=TRANSPORT",
+      "flow": "FLOW addr=2 job=315:78 pulses=0 ml=0 phase=FAULT revision=1330 terminal=1 measured=1 reason=TRANSPORT",
+      "outcome": "FINISHED"
+    },
+    {
+      "job": "315:79",
+      "updated_beijing": "2026-10-21T08:04:46.358+08:00",
+      "task": "start f54e16b40338100c 4 315 00000001 500 60000",
+      "report": "R client=f54e16b40338100c seq=4 reply=OK job=315:79 phase=7 mask=1 done=1 failed=1 unknown=0 reason=NO_FLOW",
+      "flow": "FLOW addr=2 job=315:79 pulses=0 ml=0 phase=FAULT revision=1332 terminal=1 measured=1 reason=NO_FLOW",
+      "outcome": "FINISHED"
+    },
+    {
+      "job": "315:80",
+      "updated_beijing": "2026-10-21T08:05:11.079+08:00",
+      "task": "start f54e16b40338100c 5 315 00000001 100 60000",
+      "report": "R client=f54e16b40338100c seq=5 reply=OK job=315:80 phase=7 mask=1 done=1 failed=1 unknown=0 reason=NO_FLOW",
+      "flow": "FLOW addr=2 job=315:80 pulses=0 ml=0 phase=FAULT revision=1332 terminal=1 measured=1 reason=NO_FLOW",
+      "outcome": "FINISHED"
+    },
+    {
+      "job": "315:81",
+      "updated_beijing": "2026-10-21T08:06:16.372+08:00",
+      "task": "start f54e16b40338100c 6 315 00000001 100 60000",
+      "report": "R client=f54e16b40338100c seq=6 reply=OK job=315:81 phase=7 mask=1 done=1 failed=1 unknown=0 reason=LEASE",
+      "flow": "FLOW addr=2 job=315:81 pulses=0 ml=0 phase=FAULT revision=1332 terminal=1 measured=1 reason=NO_FLOW",
+      "outcome": "FINISHED"
+    },
+    {
+      "job": "315:82",
+      "updated_beijing": "2026-10-21T08:06:36.398+08:00",
+      "task": "start f54e16b40338100c 7 315 00000001 500 60000",
+      "report": "R client=f54e16b40338100c seq=7 reply=OK job=315:82 phase=7 mask=1 done=1 failed=1 unknown=0 reason=LEASE",
+      "flow": "FLOW addr=2 job=315:82 pulses=0 ml=0 phase=FAULT revision=1332 terminal=1 measured=1 reason=NO_FLOW",
+      "outcome": "FINISHED"
+    },
+    {
+      "job": "315:83",
+      "updated_beijing": "2026-10-21T08:09:41.920+08:00",
+      "task": "start f54e16b40338100c 8 315 00000001 250 60000",
+      "report": "R client=f54e16b40338100c seq=8 reply=OK job=315:83 phase=7 mask=1 done=1 failed=1 unknown=0 reason=NO_FLOW",
+      "flow": "FLOW addr=2 job=315:83 pulses=0 ml=0 phase=FAULT revision=1332 terminal=1 measured=1 reason=NO_FLOW",
+      "outcome": "FINISHED"
+    }
+  ],
+  "observed_counts": {
+    "tasks": 8,
+    "failed_tasks": 8,
+    "all_zero_pulse_records": 8,
+    "master_reasons": {
+      "LEASE": 3,
+      "TRANSPORT": 2,
+      "NO_FLOW": 3
+    },
+    "slave_reasons": {
+      "NO_FLOW": 6,
+      "TRANSPORT": 2
+    }
+  },
+  "latest_task": {
+    "job": "315:83",
+    "target_ml": 250,
+    "speed_level": 2,
+    "duty_percent": 75,
+    "user_confirms_pump_valve_acted_and_water_flowed": true,
+    "master_times_ms": {
+      "prepare_issued": 527400,
+      "prepare_sar_end": 528335,
+      "first_start_issued": 528441,
+      "retry_start_issued": 529942,
+      "start_ack_applied": 530016,
+      "first_lease_issued": 530019,
+      "first_lease_ack_applied": 530106,
+      "pump_on": 530106,
+      "pump_off": 534706
+    },
+    "slave_times_ms": {
+      "valve_on": 638979,
+      "first_hall_sample": 638980,
+      "valve_off": 643983,
+      "terminal_fault": 644483,
+      "result_issued": 644519,
+      "result_sar_end": 645257
+    },
+    "durations_ms": {
+      "prepare_sar": 935,
+      "first_start_to_pump_on": 1665,
+      "first_lease_ack_age": 87,
+      "valve_command_on": 5004,
+      "pump_command_on": 4600,
+      "result_sar": 738
+    },
+    "hall": {
+      "pin": 5,
+      "level_at_samples": 1,
+      "raw_before": 197,
+      "raw_after": 197,
+      "job_pulses": 0,
+      "last_accepted_edge_ms": 554015
+    },
+    "master_lease_rx_sequences": [
+      22
+    ],
+    "slave_lease_ack_stack_accepted_sequences": [
+      22,
+      23,
+      24
+    ],
+    "master_reason": "NO_FLOW",
+    "slave_reason": "NO_FLOW"
+  },
+  "conclusions": {
+    "confirmed": [
+      "Task 315:83 hit the no-first-pulse 5000 ms guard while the user observed physical outflow",
+      "No accepted Hall falling edges were added to the local lifetime counter during the task",
+      "First Start needed a retry; later LeaseAck sequences 23 and 24 have no matching master receive log",
+      "Non-target valve closure waits for quiet settlement and final segmented Result before normal master closure notification"
+    ],
+    "unresolved": [
+      "Exact sensor/electrical/GPIO cause requires waveform and wiring checks",
+      "Exact loss layer for StartOK and LeaseAck is not instrumented by the current logs",
+      "Historical LEASE and TRANSPORT first triggers cannot be reconstructed from phone terminal snapshots alone"
+    ]
+  }
+}

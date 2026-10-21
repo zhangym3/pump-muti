@@ -23,7 +23,11 @@ extern "C" void app_main() {
   static MasterScheduler scheduler(mesh, pump, board::MaxConcurrent);
   for (size_t i = 0; i < MaxNodes; ++i) {
     const auto &n = storage.state().nodes[i];
-    if (n.address) scheduler.registerNode(i, {n.address, n.k, n.version});
+    if (n.address) {
+      scheduler.registerNode(i, {n.address, n.k, n.version});
+      const auto calibration = storage.calibration(i);
+      if (calibration.valid()) scheduler.setCalibration(i, calibration);
+    }
   }
   scheduler.restore(storage.state().lastJob, storage.state().lastResults);
   static Application application(storage, mesh, gateway, pump, scheduler);
