@@ -20,11 +20,12 @@ bool decodeResult(const Packet &p, ValveStatus &s) {
 }
 }
 bool Application::idle() const {
-  return !scheduler_.active() && !pump_.output();
+  return !scheduler_.active() && !pump_.output() && !store_.removingAddress();
 }
 void Application::response(uint16_t ingress, const ControlRequest &q, Reply result, JobKey key) {
   JobReport report; VolumeReport volume;
-  if (key.valid() && key == scheduler_.report().key) {
+  if (key.valid() && key == scheduler_.report().key &&
+      (scheduler_.active() || !savedJob_ || key != store_.state().lastJob.key)) {
     report = scheduler_.report(); volume = scheduler_.volume();
   } else if (key.valid() && key == store_.state().lastJob.key) {
     report = store_.state().lastJob;
@@ -81,9 +82,11 @@ void Application::replayFlows(uint32_t now) {
     const auto &saved = store_.state().lastResults[i];
     const ValveStatus &s = live.key == flowReplayKey_ ? live : saved;
     if (s.key != flowReplayKey_) { ++flowReplayCursor_; continue; }
+    const auto address = store_.resultAddress(flowReplayKey_, i);
+    if (!unicast(address)) { ++flowReplayCursor_; continue; }
     char text[192];
     snprintf(text, sizeof(text), "FLOW addr=%04x job=%lu:%lu pulses=%lu ml=%lu phase=%s revision=%lu terminal=%u measured=%u reason=%s",
-      scheduler_.node(i).config.address, static_cast<unsigned long>(flowReplayKey_.epoch),
+      address, static_cast<unsigned long>(flowReplayKey_.epoch),
       static_cast<unsigned long>(flowReplayKey_.id), static_cast<unsigned long>(s.pulses),
       static_cast<unsigned long>(volumeMl(s.pulses, s.k)), phaseName(s.phase),
       static_cast<unsigned long>(s.revision), s.phase == Phase::Done || s.phase == Phase::Fault,
@@ -160,6 +163,7 @@ void Application::request(ControlRequest q, uint16_t ingress, uint32_t now) {
   owner_ = q; ownerIngress_ = ingress; response(ingress, q, Reply::Ok, key);
 }
 void Application::incoming(const Packet &p, uint32_t now) {
+  if (p.peer == store_.removingAddress()) return;
   Reader r{p};
   if (scheduler_.find(p.peer) < 0) {
     if (p.op != Op::Hello || !mesh_.ownsSlave(p.peer) || !idle() || !storageHealthy_) return;
@@ -448,6 +452,36 @@ void Application::command(CommandLine &line, uint32_t now) {
     esp_restart();
     return;
   }
+  if (!strcmp(op, "mesh-remove")) {
+    uint64_t epoch=0, request=0, address=0;
+    if (count != 5 || !number(1,epoch) || !epoch || epoch > UINT32_MAX ||
+        !number(2,request) || !request || request > UINT32_MAX ||
+        !number(3,address,16) || !unicast(address) || address > 0x7fff || strcmp(tokens[4], "CONFIRM")) {
+      gateway_.publish("INVALID mesh_remove_fields"); return;
+    }
+    auto reject = [&](Reply reply) {
+      char text[128]; snprintf(text,sizeof(text),"REMOVE epoch=%lu req=%lu addr=%04x reply=%s",
+        (unsigned long)store_.state().epoch,(unsigned long)request,unsigned(address),replyName(reply)); gateway_.publish(text);
+    };
+    if (epoch != store_.state().epoch) { reject(Reply::Stale); return; }
+    // Re-reading the same operation never issues a second reset/delete.
+    const auto &m = mesh_.management();
+    if (m.operation == request && m.target == address &&
+        (!strncmp(m.phase,"REMOVE",6) || (store_.removingAddress() == address && removalStarted_))) {
+      meshState(uint32_t(request)); return;
+    }
+    if (!storageHealthy_) { reject(Reply::Storage); return; }
+    if (!idle() || pump_.testing() || commission_.active || store_.state().lastJob.unknown || mesh_.managementBusy()) {
+      reject(Reply::Busy); return;
+    }
+    if (!mesh_.ownsSlave(uint16_t(address))) { reject(Reply::Unauthorized); return; }
+    // A separate additive NVS journal makes both sides of local deletion
+    // resumable without changing the deployed task/state ABI.
+    if (!store_.beginRemoval(uint16_t(address))) { storageHealthy_=false; reject(Reply::Storage); return; }
+    removalStarted_ = mesh_.removeSlave(uint16_t(address),uint32_t(request),now);
+    if (!removalStarted_) { storageHealthy_=false; reject(Reply::Storage); return; }
+    meshState(uint32_t(request)); return;
+  }
   if (!strcmp(op, "mesh-reset")) {
     if (count != 2 || strcmp(tokens[1], "CONFIRM")) { gateway_.publish("INVALID mesh_reset_confirmation"); return; }
     if (!strcmp(mesh_.management().phase, "LEGACY_NETWORK")) { gateway_.publish("MESH_RESET_NOT_REQUIRED"); return; }
@@ -576,7 +610,7 @@ void Application::calibrationState(uint32_t request, size_t slot, Reply reply) {
 }
 void Application::meshState(uint32_t request) {
   const auto &s=mesh_.management(); char line[192];
-  snprintf(line,sizeof(line),"MESH epoch=%lu req=%lu op=%lu scan=%lu phase=%s busy=%u capable=%u reason=%s found=%u target=%04x",
+  snprintf(line,sizeof(line),"MESH epoch=%lu req=%lu op=%lu scan=%lu phase=%s busy=%u capable=%u reason=%s found=%u target=%04x remove=1",
     (unsigned long)store_.state().epoch,(unsigned long)request,(unsigned long)s.operation,(unsigned long)s.scan,s.phase,s.busy,s.capable,s.reason,s.found,s.target); gateway_.publish(line);
   for (unsigned i=0;i<s.found;++i) { char id[33]; for (unsigned j=0;j<16;++j) snprintf(id+2*j,3,"%02x",s.candidates[i].uuid[j]);
     snprintf(line,sizeof(line),"CAND epoch=%lu scan=%lu uuid=%s",(unsigned long)store_.state().epoch,(unsigned long)s.scan,id); gateway_.publish(line); }
@@ -616,6 +650,34 @@ void Application::commissionTick(uint32_t now) {
   if (!elapsed(now,commission_.sentAt,8000)) return;
   commissionResult(commission_.request,commission_.slot,commission_.address,Reply::Offline,false);
   commission_.active=false;
+}
+void Application::removalTick(uint32_t now) {
+  const uint16_t address = store_.removingAddress();
+  if (!address || !storageHealthy_) return;
+  const auto &m = mesh_.management();
+  if (!removalStarted_ && m.capable && !mesh_.managementBusy()) {
+    // On reboot the Mesh node may already be gone. removeSlave then goes
+    // directly to cleanup, without resetting any newly discovered device.
+    removalStarted_ = mesh_.removeSlave(address,0,now);
+    if (!removalStarted_) storageHealthy_ = false;
+    return;
+  }
+  if (!removalStarted_ || strcmp(m.phase,"REMOVE_CLEANUP") || m.target != address) return;
+  auto next = store_.state(); bool saved = true;
+  for (size_t i=0; i<MaxNodes; ++i) if (next.nodes[i].address == address) {
+    if (!store_.clearCalibration(i)) { saved = false; break; }
+    next.nodes[i] = {};
+  }
+  if (saved) saved = store_.write(next);
+  if (saved) {
+    const int slot = scheduler_.find(address);
+    if (slot >= 0) saved = scheduler_.unregisterNode(size_t(slot),address) == Reply::Ok;
+  }
+  if (saved) saved = store_.finishRemoval();
+  if (!saved) { storageHealthy_=false; pump_.trip(PumpFault::Transport,now); }
+  mesh_.finishSlaveRemoval(saved);
+  removalStarted_ = false;
+  meshState(m.operation);
 }
 void Application::periodic(uint32_t now) {
   commissionTick(now);
@@ -699,7 +761,7 @@ void Application::run() {
         (unsigned long)uxTaskGetStackHighWaterMark(nullptr),
         (unsigned long)gateway_.bluetoothStackMinimumBytes());
     }
-    mesh_.managementTick(now); inventoryTick(now);
+    mesh_.managementTick(now); removalTick(now); inventoryTick(now);
     pump_.tick(now);
     scheduler_.submissions(now);
     if (!mesh_.healthy() || mesh_.takeOverflow() || gateway_.overflow()) {

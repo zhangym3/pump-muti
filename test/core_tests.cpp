@@ -1,6 +1,7 @@
 #include "control_request.h"
 #include "master_scheduler.h"
 #include "persistent_state.h"
+#include "mesh_removal.h"
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -759,7 +760,68 @@ void speed_calibration_storage_and_preflight() {
   CHECK(legacy.scheduler.stopReason()==Reason::Protocol && !legacy.io.on);
   CHECK(legacy.net.count(Op::Prepare)==0 && legacy.net.count(Op::Start)==0);
 }
+void single_slave_removal_waits_for_exact_events_and_durable_cleanup() {
+  using Stage = MeshRemoval::Stage;
+  MeshRemoval removal;
+  removal.begin(2, 42, 100, true);
+  removal.remoteReply(3, true); CHECK(removal.stage() == Stage::Remote);
+  removal.tick(5099); CHECK(removal.stage() == Stage::Remote);
+  removal.remoteReply(2, true); CHECK(removal.stage() == Stage::DeleteReady && removal.remoteReset());
+  removal.deleting(5100);
+  removal.deleted(3, true); CHECK(removal.stage() == Stage::Deleting);
+  removal.complete(true); CHECK(removal.stage() == Stage::Deleting);
+  removal.deleted(2, true); CHECK(removal.stage() == Stage::Cleanup);
+  removal.complete(false); CHECK(removal.stage() == Stage::Failed);
+
+  // Offline nodes still leave the local network; counter wrap is supported.
+  removal.begin(10, 43, UINT32_MAX - 1000, true);
+  removal.tick(3998); CHECK(removal.stage() == Stage::Remote);
+  removal.tick(3999); CHECK(removal.stage() == Stage::DeleteReady && !removal.remoteReset());
+  removal.deleting(4000); removal.deleted(10, true);
+  removal.complete(true); CHECK(removal.stage() == Stage::Done);
+
+  removal.begin(10, 44, 0, true); removal.remoteReply(10, false); removal.deleting(100);
+  removal.tick(10099); CHECK(removal.stage() == Stage::Deleting);
+  removal.tick(10100); CHECK(removal.stage() == Stage::Failed);
+  removal.deleted(10, true); CHECK(removal.stage() == Stage::Failed);
+  // A restart after SDK deletion resumes only the durable registry cleanup.
+  removal.begin(10, 0, 0, false); CHECK(removal.stage() == Stage::Cleanup);
+  removal.complete(true); CHECK(removal.stage() == Stage::Done && !removal.remoteReset());
+}
+void unregister_only_the_selected_slave_and_keep_other_nodes() {
+  ScheduleFixture f;
+  SpeedCalibration c; c.address=10; c.baseK=1000; c.baseVersion=1; c.revision=1;
+  c.low=1100; c.medium=1200; c.high=1300;
+  CHECK(f.scheduler.setCalibration(8,c) == Reply::Ok);
+  CHECK(f.scheduler.unregisterNode(MaxNodes,10) == Reply::Invalid);
+  CHECK(f.scheduler.unregisterNode(8,2) == Reply::Invalid);
+  CHECK(f.scheduler.node(8).config.address == 10);
+  CHECK(f.scheduler.unregisterNode(8,10) == Reply::Ok);
+  CHECK(f.scheduler.find(10) == -1 && !f.scheduler.node(8).calibration.valid());
+  f.scheduler.hello(10,1000,1,true,200,TestSlaveBuildId);
+  CHECK(!f.scheduler.node(8).seen && !f.scheduler.node(8).commissioned);
+  CHECK(f.scheduler.node(0).config.address == 2 && f.scheduler.node(0).commissioned);
+  CHECK(f.scheduler.node(31).config.address == 33 && f.scheduler.node(31).commissioned);
+  f.scheduler.begin({1,1},1,100,10000,100);
+  CHECK(f.scheduler.unregisterNode(31,33) == Reply::Busy);
+  CHECK(f.scheduler.node(31).config.address == 33);
+}
+void removed_result_addresses_survive_restart_and_slot_reuse() {
+  ResultAddresses saved, restored; saved.key = {7, 3};
+  saved.nodes[0] = 2; saved.nodes[31] = 33;
+  CHECK(decodeResultAddresses(&saved, sizeof(saved), restored));
+  CHECK(restored.address({7,3}, 0, 0) == 2);
+  CHECK(restored.address({7,3}, 31, 100) == 33);
+  CHECK(restored.address({7,4}, 31, 100) == 100);
+  CHECK(!decodeResultAddresses(&saved, sizeof(saved)-1, restored));
+  saved.nodes[0] = 0x8000; CHECK(!decodeResultAddresses(&saved, sizeof(saved), restored));
+  saved.nodes[0] = 2; saved.magic = 0; CHECK(!decodeResultAddresses(&saved, sizeof(saved), restored));
+}
 int main() {
+  single_slave_removal_waits_for_exact_events_and_durable_cleanup();
+  unregister_only_the_selected_slave_and_keep_other_nodes();
+  removed_result_addresses_survive_restart_and_slot_reuse();
+  std::puts("PASS single-slave removal, offline/wrap/recovery, exact callbacks, cleanup failure and busy safeguards");
   speed_calibration_storage_and_preflight();
   std::puts("PASS per-speed K storage validation, slot identity, three PREPARE vectors and legacy preflight rejection");
   v4_exact_boundaries_and_ledger();

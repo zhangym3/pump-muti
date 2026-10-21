@@ -1,5 +1,6 @@
 #include "mesh_transport.h"
 #include "mesh_management_internal.h"
+#include "mesh_removal.h"
 #include "esp_ble_mesh_networking_api.h"
 #include "esp_ble_mesh_provisioning_api.h"
 #include "esp_ble_mesh_config_model_api.h"
@@ -12,7 +13,7 @@
 namespace pump {
 namespace {
 MeshManagement state;
-enum class Kind : uint8_t { Enable, DisableNode, Key, Bind, Candidate, Provisioned, Closed, Add, Cancelled, ResetDeleted, Config };
+enum class Kind : uint8_t { Enable, DisableNode, Key, Bind, Candidate, Provisioned, Closed, Add, Cancelled, NodeDeleted, Config };
 struct Event { Kind kind{}; int error = 0; uint32_t opcode = 0; uint16_t address = 0; MeshCandidate candidate{}; bool valid = false; };
 QueueHandle_t events;
 std::atomic<bool> lost{false};
@@ -20,6 +21,7 @@ uint16_t primary; uint32_t began, sentAt; uint8_t step, attempts;
 bool joining = false, cancelling = false; uint8_t selected[16];
 bool roleRecoveryAttempted = false, roleRecoveryPending = false;
 bool resetting = false;
+MeshRemoval removal;
 uint16_t resetAddresses[32] = {};
 uint8_t resetCount = 0, resetIndex = 0;
 esp_ble_mesh_client_t *client = nullptr;
@@ -47,6 +49,7 @@ void configCallback(esp_ble_mesh_cfg_client_cb_event_t event, esp_ble_mesh_cfg_c
     case ESP_BLE_MESH_MODEL_OP_APP_KEY_ADD: { const auto &s=p->status_cb.appkey_status; e.valid = s.status == 0 && s.net_idx == 0 && s.app_idx == 0; break; }
     case ESP_BLE_MESH_MODEL_OP_MODEL_APP_BIND: { const auto &s=p->status_cb.model_app_status; e.valid = s.status == 0 && s.element_addr == e.address && s.app_idx == 0 && s.company_id == CompanyId && s.model_id == ModelId; break; }
     case ESP_BLE_MESH_MODEL_OP_MODEL_SUB_ADD: { const auto &s=p->status_cb.model_sub_status; e.valid = s.status == 0 && s.element_addr == e.address && s.sub_addr == 0xc001 && s.company_id == CompanyId && s.model_id == ModelId; break; }
+    case ESP_BLE_MESH_MODEL_OP_NODE_RESET: e.valid = true; break;
     default: return;
   }
   enqueue(e);
@@ -135,13 +138,19 @@ void managementProvisionEvent(esp_ble_mesh_prov_cb_event_t event, esp_ble_mesh_p
     case ESP_BLE_MESH_PROVISIONER_PROV_LINK_CLOSE_EVT: e.kind=Kind::Closed; e.error=p->provisioner_prov_link_close.reason; break;
     case ESP_BLE_MESH_PROVISIONER_ADD_UNPROV_DEV_COMP_EVT: e.kind=Kind::Add; e.error=p->provisioner_add_unprov_dev_comp.err_code; break;
     case ESP_BLE_MESH_PROVISIONER_DELETE_DEV_COMP_EVT:
-      e.kind=resetting ? Kind::ResetDeleted : Kind::Cancelled;
+      e.kind=Kind::Cancelled;
       e.error=p->provisioner_delete_dev_comp.err_code; break;
+    case ESP_BLE_MESH_PROVISIONER_DELETE_NODE_WITH_ADDR_COMP_EVT:
+      e.kind=Kind::NodeDeleted; e.error=p->provisioner_delete_node_with_addr_comp.err_code;
+      e.address=p->provisioner_delete_node_with_addr_comp.unicast_addr; break;
     default:return;
   } enqueue(e);
 }
 void MeshTransport::managementTick(uint32_t now) {
-  if (lost.exchange(false)) fail("EVENT_OVERFLOW");
+  if (lost.exchange(false)) {
+    fail("EVENT_OVERFLOW");
+    if (removal.stage() != MeshRemoval::Stage::Idle && removal.stage() != MeshRemoval::Stage::Done) state.busy = true;
+  }
   Event e; for (int budget=0; budget<8 && xQueueReceive(events,&e,0)==pdTRUE; ++budget) {
     switch(e.kind) {
       case Kind::Enable: {
@@ -192,7 +201,9 @@ void MeshTransport::managementTick(uint32_t now) {
         if (e.error) { state.phase="FAILED"; state.reason="RESTART_REQUIRED"; state.busy=true; }
         else { joining=false; fail("PROVISION_TIMEOUT"); }
       } break;
-      case Kind::ResetDeleted: if (resetting) {
+      case Kind::NodeDeleted:
+        removal.deleted(e.address, !e.error);
+        if (resetting && e.address == resetAddresses[resetIndex]) {
         if (e.error) {
           resetting = false; state.busy = false; state.phase = "FAILED"; state.reason = "RESET_DELETE_FAILED";
         } else if (++resetIndex < resetCount) {
@@ -203,12 +214,23 @@ void MeshTransport::managementTick(uint32_t now) {
           resetting = false; state.busy = false; state.phase = "RESET_DONE"; state.reason = "NONE"; state.found = 0; state.target = 0;
         }
       } break;
-      case Kind::Config: if (step && step<5 && e.address==state.target && e.opcode==opcodeForStep()) {
+      case Kind::Config:
+        if (e.opcode == ESP_BLE_MESH_MODEL_OP_NODE_RESET) { removal.remoteReply(e.address, !e.error && e.valid); break; }
+        if (step && step<5 && e.address==state.target && e.opcode==opcodeForStep()) {
         if (e.error) { if (attempts>=3 || !sendStep(now)) fail("CONFIG_TIMEOUT"); }
         else if (!e.valid) fail("CONFIG_REJECTED");
         else { ++step; attempts=0; if(step==5) { state.phase="WAIT_HELLO"; sentAt=now; } else if (!sendStep(now)) fail("CONFIG_SEND"); }
       } break;
     }
+  }
+  removal.tick(now);
+  if (removal.stage() == MeshRemoval::Stage::DeleteReady) {
+    removal.deleting(now);
+    if (esp_ble_mesh_provisioner_delete_node_with_addr(removal.address()) != ESP_OK) removal.deleted(removal.address(), false);
+  }
+  if (removal.stage() == MeshRemoval::Stage::Cleanup) state.phase = "REMOVE_CLEANUP";
+  if (removal.stage() == MeshRemoval::Stage::Failed && strcmp(state.phase,"FAILED")) {
+    state.phase = "FAILED"; state.reason = "REMOVE_RESTART_REQUIRED"; state.busy = true;
   }
   if (!strcmp(state.phase,"SCANNING") && elapsed(now,began,15000)) { state.phase="SCAN_DONE"; state.busy=false; }
   if (joining && !cancelling && elapsed(now,began,90000)) {
@@ -268,6 +290,30 @@ bool MeshTransport::resetProvisionedSlaves(uint32_t now) {
 bool MeshTransport::retrySlave(uint16_t address,uint32_t request,uint32_t now) {
   if (!state.capable || state.busy || !ownsSlave(address)) return false;
   state.operation=request; configure(address,now); return true;
+}
+bool MeshTransport::removeSlave(uint16_t address, uint32_t request, uint32_t now) {
+  if (!state.capable || state.busy || !unicast(address) || address == primary) return false;
+  const auto *node = esp_ble_mesh_provisioner_get_node_with_addr(address);
+  if (node && !ownsSlave(address)) return false;
+  step = 0; joining = cancelling = false;
+  state.operation = request; state.target = address; state.found = 0;
+  state.phase = "REMOVING"; state.reason = "NONE"; state.busy = true;
+  removal.begin(address, request, now, node != nullptr);
+  if (node) {
+    esp_ble_mesh_client_common_param_t p{};
+    p.model = client->model; p.opcode = ESP_BLE_MESH_MODEL_OP_NODE_RESET;
+    p.ctx.addr = address; p.ctx.net_idx = 0; p.ctx.app_idx = 0; p.ctx.send_ttl = 3; p.msg_timeout = 4000;
+    esp_ble_mesh_cfg_client_set_state_t set{};
+    if (esp_ble_mesh_config_client_set_state(&p, &set) != ESP_OK) removal.remoteReply(address, false);
+  }
+  return true;
+}
+void MeshTransport::finishSlaveRemoval(bool saved) {
+  if (removal.stage() != MeshRemoval::Stage::Cleanup) return;
+  removal.complete(saved);
+  state.phase = saved ? "REMOVE_DONE" : "FAILED";
+  state.reason = saved ? (removal.remoteReset() ? "REMOTE_RESET" : "LOCAL_ONLY") : "REMOVE_STORAGE";
+  state.busy = !saved;
 }
 void MeshTransport::slaveHello(uint16_t address) {
   if (step==5 && state.target==address) { step=0; state.phase="READY"; state.reason="NONE"; state.busy=false; }

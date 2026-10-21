@@ -29,6 +29,23 @@ struct PersistentState : LegacyPersistentState {
   uint8_t clientAmounts[16][MaxNodes] = {};
   PersistentState() { format = 3; }
 };
+// Stored under a separate NVS key before removal. Slot reuse must not relabel
+// the last job's saved measurements as results from a newly registered node.
+struct ResultAddresses {
+  uint32_t magic = 0x504D4131;
+  JobKey key;
+  uint16_t nodes[MaxNodes] = {};
+  uint16_t address(JobKey job, size_t slot, uint16_t current) const {
+    return slot < MaxNodes && key.valid() && key == job ? nodes[slot] : current;
+  }
+};
+inline bool decodeResultAddresses(const void *bytes, size_t size, ResultAddresses &out) {
+  if (!bytes || size != sizeof(ResultAddresses)) return false;
+  ResultAddresses decoded; memcpy(&decoded, bytes, size);
+  if (decoded.magic != 0x504D4131 || !decoded.key.valid()) return false;
+  for (auto address : decoded.nodes) if (address && !unicast(address)) return false;
+  out = decoded; return true;
+}
 static_assert(std::is_trivially_copyable<LegacyPersistentState>::value, "legacy NVS must remain byte-copyable");
 static_assert(std::is_trivially_copyable<PersistentState>::value, "NVS must remain byte-copyable");
 static_assert(sizeof(JobReport) == 28 && offsetof(JobReport, reason) == 25,

@@ -58,6 +58,8 @@ def firmware(root, env, chip, nm, evidence_label, max_concurrent=None):
     for name, digest in manifest["outputs"].items():
         require(sha(root / ".mesh-sdk/bt" / name) == digest, "SDK cache changed: " + name)
     folder = root / ".pio/build" / env
+    config = (folder / "config/sdkconfig.h").read_text(encoding="utf-8")
+    require(f'#define CONFIG_IDF_TARGET "{chip}"' in config, "Build target mismatch: " + str(root))
     require((folder / "firmware.bin").read_bytes()[0xB0:0xD0] ==
             hashlib.sha256((folder / "firmware.elf").read_bytes()).digest(),
             "Firmware binary does not match ELF")
@@ -135,7 +137,7 @@ def main():
         require(not target.is_relative_to(root / "src") and target != root, "Invalid output path")
     tools = args.platformio_home / "packages"
     info = {
-        "master": firmware(master, args.master_env, "esp32", tools / "toolchain-xtensa-esp-elf/bin/xtensa-esp32-elf-nm.exe", master_label, candidate_concurrency),
+        "master": firmware(master, args.master_env, "esp32s3", tools / "toolchain-xtensa-esp-elf/bin/xtensa-esp32s3-elf-nm.exe", master_label, candidate_concurrency),
         "slave": firmware(slave, "valve_slave_c3", "esp32c3", tools / "toolchain-riscv32-esp/bin/riscv32-esp-elf-nm.exe", label),
     }
     board = (master / "include/board_profile.h").read_text(encoding="utf-8")
@@ -284,9 +286,9 @@ def main():
 主机生产默认并发保持 1；台架五路候选环境支持并发 5，实际包配置见 candidate.json 的 candidate_max_concurrent。
 本打包工具不刷写设备或启泵。先阅读 docs/ 下实施报告和现场验收步骤；仅 1 台从机，五路尚未实机验收。
 master/firmware.bin 与 slave/firmware.bin 均位于 0x20000。
-主机 bootloader.bin 位于 0x1000，从机位于 0x0；两端 partitions.bin 均位于 0x8000。
+ESP32-S3 主机和 ESP32-C3 从机 bootloader.bin 均位于 0x0；两端 partitions.bin 均位于 0x8000。
 精确芯片/地址/SHA256 见 candidate.json，SHA256SUMS 覆盖包内文件。
-不要使用 IDF 辅助 flash_args 中的 0x10000；当前端口配置为主 COM5、从 COM6，刷写前核对身份。
+不要使用 IDF 辅助 flash_args 中的 0x10000；刷写前确认 PlatformIO 中主从端口并核对设备身份。
 APK 为 debug 候选构建，未安装到手机、未验收真机重连/重启 UI。
 source/ 为三仓当前构建相关源码快照，未包含 Git 历史或全局 SDK；SDK 补丁和完整组件文件清单在包内。
 source/master、source/slave 对应原 pump-muti、pump-muti-slave；运行跨仓host测试时恢复这两个相邻目录名。
@@ -295,7 +297,7 @@ source/master、source/slave 对应原 pump-muti、pump-muti-slave；运行跨�
     if label == "offline-fix":
         text += "\n本包为从机离线修复；优先阅读 docs/SLAVE_OFFLINE_FIX_20261019.md。旧实施报告记录历史版本。\n"
         text += "故障后仅恢复诊断通信，业务保持锁存停机；缺失完成回调禁止恢复发送。新业务须先受控重启并核对状态。\n"
-        text += "本机最近识别端口：主机 COM5、从机 COM6；刷写前核对物理身份，保留 NVS。hello 可查询本包 build ID。\n"
+        text += "刷写前核对主从物理身份和端口，保留 NVS。hello 可查询本包 build ID。\n"
     if args.app_evidence_reference:
         text += "APK 取自前一候选并核对清单哈希，当前 APP 源码/配置/测试日志及 XML 与旧快照相同；本轮复用证据，未重跑 Android 测试。\n"
     (target / "README.txt").write_text(text, encoding="utf-8")

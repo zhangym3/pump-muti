@@ -56,6 +56,7 @@ class MasterScheduler {
   MasterScheduler(MeshSender &net, PumpSafetyController &pump, uint8_t concurrent)
     : net_(net), pump_(pump), concurrent_(concurrent) {}
   Reply registerNode(size_t slot, RegisteredNode cfg);
+  Reply unregisterNode(size_t slot, uint16_t address);
   Reply setCalibration(size_t slot, const SpeedCalibration &value);
   Reply check(uint32_t mask, uint32_t ml, uint32_t maxMs, uint32_t now, const uint8_t *amounts = nullptr);
   void restore(const JobReport &report, const ValveStatus results[MaxNodes]);

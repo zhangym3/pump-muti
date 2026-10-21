@@ -33,6 +33,7 @@ class Application {
   void beginInventory(uint32_t request, uint32_t now);
   void inventoryTick(uint32_t now);
   void commissionTick(uint32_t now);
+  void removalTick(uint32_t now);
   void commissionResult(uint32_t request, uint8_t slot, uint16_t address, Reply reply, bool commissioned);
   struct InventoryNode { uint16_t address=0; uint8_t slot=0; bool online=false, commissioned=false; };
   InventoryNode inventory_[32];
@@ -55,6 +56,7 @@ class Application {
   uint8_t flowReplayCursor_ = 0, resultQueryCursor_ = 0;
   bool resultQueryOwnerPending_ = false;
   bool meshResetPending_ = false;
+  bool removalStarted_ = false;
   struct CommissionOperation { bool active=false; uint32_t request=0, sentAt=0; uint16_t address=0; uint8_t slot=0, attempts=0; } commission_;
   ControlRequest owner_;
   ControlRequest pumpTestOwner_;

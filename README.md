@@ -1,12 +1,16 @@
-# 水泵主节点工程（ESP32）
+# 水泵主节点工程（ESP32-S3 N16R8）
+
+2026-10-21：主控迁移至 ESP32-S3 N16R8，水泵 PWM 改为 **GPIO4**，bootloader 写入地址改为 **0x0**。接线和迁移说明见 [ESP32-S3 迁移说明](docs/ESP32_S3_MIGRATION.md)。以下历史候选报告记录旧 ESP32 产物。
+
+2026-10-21：配套 APP 1.2.2 支持「设备 → 删除 → 确认删除」单台从机，含离线删除、远程退网与重启恢复；需要更新主机固件。新版从机收到 Node Reset 后关闭输出并重启进入待组网。使用、协议和验收边界见 [单台删除从机](docs/SLAVE_REMOVAL.md)，本次未刷写或实机验证。
 
 最新候选及验证结果见 [从机离线修复报告](docs/SLAVE_OFFLINE_FIX_20261019.md)：主机 `4c3a56d9`、从机 `80ba7f64`。故障后可在旧发送真实结束后恢复诊断通信，业务保持停机锁存；固件未刷写，硬件验收待进行。使用报告中的独立候选包，传统 `dist/pump_master` 不包含此次修复。
 
-本工程 `D:/pump/pump-muti` 只包含经典 ESP32 主节点应用，唯一构建环境为 `pump_master`，Board 为 `esp32dev`（4MB Flash），使用 ESP-IDF 5.4 / PlatformIO espressif32@6.10.0。
+本工程 `D:/pump/pump-muti` 只包含 ESP32-S3 主节点应用，生产构建环境为 `pump_master`，台架五路候选为 `pump_master_five_candidate`。Board 为 `esp32-s3-devkitc-1`，覆盖为 N16R8 的 16MB Flash，DIO / 40MHz，不依赖 PSRAM，使用 ESP-IDF 5.4 / PlatformIO espressif32@6.10.0。
 
 主节点负责手机 PIN 配对和加密 GATT、水泵 PWM、Mesh 配网、远端节点注册和定量调度。保留与从节点通信所需的协议和状态结构；本地阀门控制、流量计中断、从节点命令和角色分支已移除。从节点由独立工程 `D:/pump/pump-muti-slave` 维护。
 
-当前三工程交接入口为 [HANDOVER.md](HANDOVER.md)（2026-10-19），包含 Git 基线、逐阀水量、接线、命令、NVS 升级/回退、本机测试与待做实机验收。历史文档中的启动锁、存储格式和接线说明有遗留，以该文档及当前源码为准。
+三工程历史交接入口为 [HANDOVER.md](HANDOVER.md)（2026-10-19），包含 Git 基线、逐阀水量、命令、NVS 升级/回退与实机验收。主控芯片、接线和烧录地址以本 README 及 S3 迁移说明为准。
 
 ## 构建、测试与打包
 
@@ -21,15 +25,17 @@ python tools/package_firmware.py
 
 | 镜像 | 写入偏移 |
 | --- | --- |
-| bootloader.bin | 0x1000 |
+| bootloader.bin | 0x0 |
 | partitions.bin | 0x8000 |
 | firmware.bin | 0x20000 |
 
-NVS 位于 0x9000，长度 64KB。升级保留 NVS。只有确认实板和端口后才手动执行 `pio run -e pump_master -t upload --upload-port COMx`。
+NVS 位于 0x9000，长度 64KB。S3 同板升级保留 NVS；更换芯片时旧板 NVS 不会自动转移，见迁移说明。只有确认实板和端口后才手动执行 `pio run -e pump_master -t upload --upload-port COMx`。
 
 ## 主机接线与控制
 
-GPIO25 接水泵驱动 PWM 输入，20kHz，低/中/高为 50/75/100%，停止为 0%。参数见 `include/board_profile.h`。信号为 3.3V，需匹配的驱动和外部下拉，频率与极性以实际驱动规格为准。主机不采集流量、压力、缺水或运行反馈。
+GPIO4 接水泵驱动 PWM 输入，20kHz，低/中/高为 50/75/100%，停止为 0%。N16R8 的 GPIO35/36/37 连接板载八线 PSRAM，不能作为水泵 PWM；S3 没有 GPIO25。参数见 `include/board_profile.h`。信号为 3.3V，需匹配的驱动和外部下拉，频率与极性以实际驱动规格为准。主机不采集流量、压力、缺水或运行反馈。
+
+维护命令和日志使用 UART0：GPIO43=TX、GPIO44=RX、115200。使用开发板的 USB-UART 接口；原生 USB（GPIO19/20）未配置为维护控制台。上传和监视端口按 `platformio.ini` 当前配置，换板后核对实际端口。
 
 当前 `commissioned=true`，上电保持输出关闭、低档和无故障，冷却完成且其他条件满足后可执行定量，不再要求每次 USB `pump-reset`。独立限时试泵不会自动开阀；`pump-reset` 仍是 USB 故障复位维护命令，不会恢复旧任务。
 

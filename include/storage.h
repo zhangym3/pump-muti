@@ -15,9 +15,18 @@ class Storage {
   SpeedCalibration calibration(size_t slot) const;
   bool writeCalibration(size_t slot, const SpeedCalibration &value);
   bool clearCalibrations();
+  bool clearCalibration(size_t slot);
+  uint16_t removingAddress() const { return removingAddress_; }
+  bool beginRemoval(uint16_t address);
+  bool finishRemoval();
+  uint16_t resultAddress(JobKey job, size_t slot) const {
+    return slot < MaxNodes ? resultAddresses_.address(job, slot, state_.nodes[slot].address) : 0;
+  }
  private:
   nvs_handle_t handle_ = 0;
   PersistentState state_;
   CalibrationStore calibrations_;
+  uint16_t removingAddress_ = 0;
+  ResultAddresses resultAddresses_;
 };
 }

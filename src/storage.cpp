@@ -26,6 +26,12 @@ bool Storage::open(uint32_t profile) {
   const auto calibrationErr = nvs_get_blob(handle_, "speed_cal", &saved, &calibrationSize);
   if (calibrationErr != ESP_ERR_NVS_NOT_FOUND &&
       (calibrationErr != ESP_OK || !decodeCalibrations(&saved, calibrationSize, calibrations_))) return false;
+  const auto removalErr = nvs_get_u16(handle_, "remove_addr", &removingAddress_);
+  if (removalErr != ESP_ERR_NVS_NOT_FOUND && (removalErr != ESP_OK || !unicast(removingAddress_))) return false;
+  ResultAddresses addresses; size_t addressSize = sizeof(addresses);
+  const auto addressErr = nvs_get_blob(handle_, "result_addrs", &addresses, &addressSize);
+  if (addressErr != ESP_ERR_NVS_NOT_FOUND &&
+      (addressErr != ESP_OK || !decodeResultAddresses(&addresses, addressSize, resultAddresses_))) return false;
   if (state_.epoch == UINT32_MAX) return false;
   ++state_.epoch;
   if (state_.lastJob.phase >= SchedulePhase::Preparing && state_.lastJob.phase <= SchedulePhase::Between) {
@@ -66,5 +72,36 @@ bool Storage::clearCalibrations() {
   size_t size = 0;
   if (nvs_get_blob(handle_, "speed_cal", nullptr, &size) != ESP_ERR_NVS_NOT_FOUND) return false;
   calibrations_ = {}; return true;
+}
+bool Storage::clearCalibration(size_t slot) {
+  if (!handle_ || slot >= MaxNodes) return false;
+  auto next = calibrations_; next.nodes[slot] = {};
+  if (nvs_set_blob(handle_, "speed_cal", &next, sizeof(next)) != ESP_OK || nvs_commit(handle_) != ESP_OK) return false;
+  CalibrationStore verify; size_t size = sizeof(verify);
+  if (nvs_get_blob(handle_, "speed_cal", &verify, &size) != ESP_OK || size != sizeof(next) || memcmp(&verify, &next, size)) return false;
+  calibrations_ = next; return true;
+}
+bool Storage::beginRemoval(uint16_t address) {
+  if (!handle_ || removingAddress_ || !unicast(address)) return false;
+  if (state_.lastJob.key.valid() && resultAddresses_.key != state_.lastJob.key) {
+    ResultAddresses next; next.key = state_.lastJob.key;
+    for (size_t i = 0; i < MaxNodes; ++i) next.nodes[i] = state_.nodes[i].address;
+    if (nvs_set_blob(handle_, "result_addrs", &next, sizeof(next)) != ESP_OK || nvs_commit(handle_) != ESP_OK) return false;
+    ResultAddresses verify; size_t size = sizeof(verify);
+    if (nvs_get_blob(handle_, "result_addrs", &verify, &size) != ESP_OK || size != sizeof(next) || memcmp(&verify, &next, size)) return false;
+    resultAddresses_ = next;
+  }
+  if (nvs_set_u16(handle_, "remove_addr", address) != ESP_OK || nvs_commit(handle_) != ESP_OK) return false;
+  uint16_t verify = 0;
+  if (nvs_get_u16(handle_, "remove_addr", &verify) != ESP_OK || verify != address) return false;
+  removingAddress_ = address; return true;
+}
+bool Storage::finishRemoval() {
+  if (!handle_) return false;
+  const auto err = nvs_erase_key(handle_, "remove_addr");
+  if ((err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND) || nvs_commit(handle_) != ESP_OK) return false;
+  uint16_t verify = 0;
+  if (nvs_get_u16(handle_, "remove_addr", &verify) != ESP_ERR_NVS_NOT_FOUND) return false;
+  removingAddress_ = 0; return true;
 }
 }

@@ -26,6 +26,18 @@ Reply MasterScheduler::registerNode(size_t slot, RegisteredNode cfg) {
   if (existing >= 0 && size_t(existing) != slot) return Reply::Conflict;
   nodes_[slot] = {}; nodes_[slot].config = cfg; return Reply::Ok;
 }
+Reply MasterScheduler::unregisterNode(size_t slot, uint16_t address) {
+  if (active() || pump_.output() || pump_.testing()) return Reply::Busy;
+  if (slot >= MaxNodes || !address || nodes_[slot].config.address != address) return Reply::Invalid;
+  // Keep the completed task's measurement available to existing query/replay.
+  auto &node = nodes_[slot];
+  const auto status = node.status;
+  const auto pulses = node.telemetryPulses, telemetryAt = node.telemetryAt;
+  const bool telemetrySeen = node.telemetrySeen;
+  node = {}; node.status = status; node.telemetryPulses = pulses;
+  node.telemetryAt = telemetryAt; node.telemetrySeen = telemetrySeen;
+  return Reply::Ok;
+}
 void MasterScheduler::hello(uint16_t source, uint32_t k, uint32_t ver, bool commissioned,
                             uint32_t now, uint32_t buildId) {
   const int i = find(source); if (i < 0) return;

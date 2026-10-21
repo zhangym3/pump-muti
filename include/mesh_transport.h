@@ -38,6 +38,8 @@ class MeshTransport final : public MeshSender {
   bool scanSlaves(uint32_t request, uint32_t now);
   bool joinSlave(const uint8_t uuid[16], uint32_t request, uint32_t now);
   bool retrySlave(uint16_t address, uint32_t request, uint32_t now);
+  bool removeSlave(uint16_t address, uint32_t request, uint32_t now);
+  void finishSlaveRemoval(bool saved);
   // Field migration from the legacy Mesh role. Clears persisted Mesh
   // credentials/role only; application NVS (PIN, tasks and pump settings)
   // remains untouched.

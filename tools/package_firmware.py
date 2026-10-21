@@ -6,9 +6,9 @@ from pathlib import Path
 import shutil
 
 ROLE = 'pump_master'
-BOARD = 'esp32dev'
-CHIP = 'esp32'
-BOOT_OFFSET = '0x1000'
+BOARD = 'esp32-s3-devkitc-1'
+CHIP = 'esp32s3'
+BOOT_OFFSET = '0x0'
 root = Path(__file__).resolve().parents[1]
 dist = root / "dist"
 build = root / ".pio" / "build" / ROLE
@@ -27,7 +27,8 @@ config = (build / "config" / "sdkconfig.h").read_text()
 if f'#define CONFIG_IDF_TARGET "{CHIP}"' not in config:
     raise SystemExit("Build target does not match this project")
 manifest = {"createdUtc": datetime.now(timezone.utc).isoformat(), "role": ROLE, "chip": CHIP,
-            "board": BOARD, "flash": "4MB", "hardwareValidated": False,
+            "board": BOARD, "module": "ESP32-S3-WROOM-1-N16R8", "flash": "16MB",
+            "pumpPwmGpio": 4, "psramEnabled": False, "hardwareValidated": False,
             "note": "Application offset 0x20000. Preserve NVS. Match chip and role before flashing.",
             "files": [], "sources": {}}
 for name, offset in images.items():
