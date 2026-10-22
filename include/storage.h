@@ -5,6 +5,7 @@
 #include "control_request.h"
 #include "nvs.h"
 #include "persistent_state.h"
+#include "flow_calibration_state.h"
 #include "speed_calibration.h"
 namespace pump {
 class Storage {
@@ -16,6 +17,8 @@ class Storage {
   bool writeCalibration(size_t slot, const SpeedCalibration &value);
   bool clearCalibrations();
   bool clearCalibration(size_t slot);
+  const FlowCalibrationState &flowCalibration() const { return flowCalibration_; }
+  bool writeFlowCalibration(const FlowCalibrationState &value);
   uint16_t removingAddress() const { return removingAddress_; }
   bool beginRemoval(uint16_t address);
   bool finishRemoval();
@@ -26,6 +29,7 @@ class Storage {
   nvs_handle_t handle_ = 0;
   PersistentState state_;
   CalibrationStore calibrations_;
+  FlowCalibrationState flowCalibration_;
   uint16_t removingAddress_ = 0;
   ResultAddresses resultAddresses_;
 };

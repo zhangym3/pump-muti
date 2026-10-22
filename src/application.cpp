@@ -20,7 +20,13 @@ bool decodeResult(const Packet &p, ValveStatus &s) {
 }
 }
 bool Application::idle() const {
-  return !scheduler_.active() && !pump_.output() && !store_.removingAddress();
+  return !scheduler_.active() && !pump_.output() && !store_.removingAddress() && !flowCalibrationLocked();
+}
+bool Application::flowCalibrationLocked() const {
+  const auto phase = store_.flowCalibration().phase;
+  return phase == FlowCalibrationPhase::Starting || phase == FlowCalibrationPhase::Preout ||
+    phase == FlowCalibrationPhase::MarkPending || phase == FlowCalibrationPhase::Measuring ||
+    phase == FlowCalibrationPhase::Stopping || phase == FlowCalibrationPhase::Unknown;
 }
 void Application::response(uint16_t ingress, const ControlRequest &q, Reply result, JobKey key) {
   JobReport report; VolumeReport volume;
@@ -224,6 +230,29 @@ void Application::incoming(const Packet &p, uint32_t now) {
       p.peer,(unsigned long)key.epoch,(unsigned long)key.id,(unsigned long)live.pulses,
       (unsigned long)live.milliliters,(unsigned long)live.runtimeMs,(unsigned long)live.millilitersPerMinute);
     gateway_.publishLive(text);
+    const auto &flow = store_.flowCalibration();
+    if (flow.key == key && (flow.phase == FlowCalibrationPhase::Preout ||
+                            flow.phase == FlowCalibrationPhase::Measuring)) flowCalibrationStatus();
+  } else if (p.op == Op::MeasureMarkAck) {
+    if (!controlFormat(p)) return;
+    const JobKey key = r.key(); const uint32_t pulses = r.u32(); const Reply reply = Reply(r.u8());
+    if (!r.done()) return;
+    const auto &flow = store_.flowCalibration();
+    if (flow.key != key || flow.phase != FlowCalibrationPhase::MarkPending) return;
+    const bool applied = scheduler_.calibrationMarkAck(p.peer, key, pulses, reply, now);
+    if (!applied) return;
+    auto next = flow;
+    if (reply == Reply::Ok) {
+      next.startPulses = pulses; next.marked = true;
+      next.phase = FlowCalibrationPhase::Measuring;
+    } else {
+      next.reason = Reason::Transport; next.phase = FlowCalibrationPhase::Invalid;
+    }
+    if (!store_.writeFlowCalibration(next)) {
+      storageHealthy_ = false; scheduler_.stop(Reason::Transport, now);
+      flowCalibrationStatus(Reply::Storage); return;
+    }
+    flowCalibrationStatus(reply);
   } else if (p.op==Op::TargetClosed) {
     const auto key=r.key(); if (!r.done()) return;
     const bool applied=scheduler_.targetClosed(p.peer,key,now);
@@ -247,6 +276,21 @@ void Application::incoming(const Packet &p, uint32_t now) {
     const int slot = scheduler_.find(p.peer); const uint32_t bit = uint32_t(1) << slot;
     const auto &current = scheduler_.node(slot).status;
     const auto &report = scheduler_.report();
+    const auto &flow = store_.flowCalibration();
+    if (flow.key == s.key && flow.phase != FlowCalibrationPhase::Idle &&
+        (s.phase == Phase::Done || s.phase == Phase::Fault)) {
+      auto next = flow; next.closePulses = s.closePulses; next.finalPulses = s.pulses; next.reason = s.reason;
+      if (s.reason == Reason::Reboot) next.phase = FlowCalibrationPhase::Unknown;
+      else if (flow.marked && s.reason == Reason::Manual && s.quiet && !s.truncated &&
+               s.closePulses > flow.startPulses && s.pulses >= s.closePulses)
+        next.phase = FlowCalibrationPhase::Complete;
+      else next.phase = FlowCalibrationPhase::Invalid;
+      next.operation = FlowCalibrationOperation::Stop;
+      if (!store_.writeFlowCalibration(next)) {
+        storageHealthy_ = false; pump_.trip(PumpFault::Transport, now);
+      }
+      flowCalibrationStatus(next.phase == FlowCalibrationPhase::Complete ? Reply::Ok : Reply::NotReady);
+    }
     if (current.key == s.key && current.revision == s.revision && s.key == report.key &&
         (report.selected & bit) && (s.phase == Phase::Done || s.phase == Phase::Fault))
       publishFlow(p.peer, s.key, s.pulses, s.k, s.phase, s.reason, s.revision, true);
@@ -313,7 +357,7 @@ void Application::command(CommandLine &line, uint32_t now) {
   auto number = [&](size_t index, uint64_t &v, unsigned base = 10) { return index < count && unsignedNumber(tokens[index], v, base); };
   const char *op = tokens[0];
   if (!strcmp(op, "hello") && count == 1) {
-    char text[192]; snprintf(text, sizeof(text), "HELLO role=%s addr=%04x master=%04x epoch=%lu mesh=%u commissioned=%u pump_fault=%s individual=1 build=%08lx tx_healthy=%u calibration=1",
+    char text[192]; snprintf(text, sizeof(text), "HELLO role=%s addr=%04x master=%04x epoch=%lu mesh=%u commissioned=%u pump_fault=%s individual=1 build=%08lx tx_healthy=%u calibration=1 flow_calibration=1",
       "PUMP_MASTER", mesh_.address(), store_.state().master,
       static_cast<unsigned long>(store_.state().epoch), mesh_.ready(),
       board::pumpConfig().valid(), pumpFaultName(pump_.fault()),(unsigned long)PUMP_BUILD_ID,mesh_.healthy()); gateway_.publish(text); return;
@@ -322,6 +366,140 @@ void Application::command(CommandLine &line, uint32_t now) {
     localState(now); pumpPwmState(); meshState(); return;
   }
   if (!strcmp(op, "mesh-diag") && count == 1) { meshState(); return; }
+  if (!strcmp(op, "flow-cal-start")) {
+    uint64_t epoch=0, client=0, request=0, slot=0, address=0, standardMl=0, speed=0;
+    if (count != 8 || !number(1,epoch) || !epoch || epoch>UINT32_MAX ||
+        !number(2,client,16) || !client || client>UINT64_MAX || !number(3,request) || !request || request>UINT32_MAX ||
+        !number(4,slot) || slot<1 || slot>MaxNodes || !number(5,address,16) || !unicast(address) || address>0x7fff ||
+        !number(6,standardMl) || standardMl<50 || standardMl>2000 ||
+        !number(7,speed) || speed<1 || speed>3) {
+      gateway_.publish("INVALID flow_cal_fields"); return;
+    }
+    const auto &savedFlow = store_.flowCalibration();
+    if (epoch != store_.state().epoch) { flowCalibrationStatus(Reply::Stale,client,uint32_t(request)); return; }
+    if (savedFlow.client == client && savedFlow.request == request && savedFlow.key.valid()) {
+      if (savedFlow.slot != slot || savedFlow.address != address || savedFlow.standardMl != standardMl || savedFlow.speed != speed)
+        flowCalibrationStatus(Reply::Conflict,client,uint32_t(request));
+      else flowCalibrationStatus(Reply::Ok);
+      return;
+    }
+    if (!storageHealthy_) { flowCalibrationStatus(Reply::Storage,client,uint32_t(request)); return; }
+    if (flowCalibrationLocked() || scheduler_.active() || pump_.output() || pump_.testing() ||
+        commission_.active || store_.state().lastJob.unknown || mesh_.managementBusy()) {
+      flowCalibrationStatus(Reply::Busy,client,uint32_t(request)); return;
+    }
+    if (!mesh_.ready() || !mesh_.healthy() || mesh_.address() != store_.state().master) {
+      flowCalibrationStatus(Reply::NotReady,client,uint32_t(request)); return;
+    }
+    const size_t index = size_t(slot-1);
+    const auto &cfg = store_.state().nodes[index];
+    if (cfg.address != address || !mesh_.ownsSlave(cfg.address)) {
+      flowCalibrationStatus(Reply::Stale,client,uint32_t(request)); return;
+    }
+    const Reply allowed = scheduler_.checkCalibration(index,uint32_t(standardMl),uint8_t(speed),60000,now);
+    if (allowed != Reply::Ok) { flowCalibrationStatus(allowed,client,uint32_t(request)); return; }
+    const auto &persisted = store_.state();
+    if (persisted.jobCounter == UINT32_MAX) { flowCalibrationStatus(Reply::Stale,client,uint32_t(request)); return; }
+    auto next = persisted;
+    const JobKey key{next.epoch,++next.jobCounter};
+    const uint32_t mask = uint32_t(1) << index;
+    next.lastJob = {}; next.lastJob.key=key; next.lastJob.selected=mask; next.lastJob.phase=SchedulePhase::Preparing;
+    for (auto &result : next.lastResults) result = {};
+    if (!store_.write(next)) { storageHealthy_=false; flowCalibrationStatus(Reply::Storage,client,uint32_t(request)); return; }
+    FlowCalibrationState session; session.client=client; session.request=uint32_t(request); session.key=key;
+    session.standardMl=uint32_t(standardMl); session.maxMs=60000; session.address=uint16_t(address);
+    session.slot=uint8_t(slot); session.speed=uint8_t(speed); session.phase=FlowCalibrationPhase::Starting;
+    session.operation=FlowCalibrationOperation::Start; session.reason=Reason::None;
+    if (!store_.writeFlowCalibration(session)) {
+      storageHealthy_=false;
+      auto failed = store_.state(); failed.lastJob.phase=SchedulePhase::Failed;
+      failed.lastJob.reason=Reason::Transport; failed.lastJob.failed=mask;
+      store_.write(failed);
+      flowCalibrationStatus(Reply::Storage,client,uint32_t(request)); return;
+    }
+    scheduler_.begin(key,mask,uint32_t(standardMl),60000,now,nullptr,true); savedJob_=false;
+    flowCalibrationStatus(Reply::Ok); return;
+  }
+  if (!strcmp(op, "flow-cal-mark") || !strcmp(op, "flow-cal-stop")) {
+    const bool mark = !strcmp(op,"flow-cal-mark");
+    uint64_t epoch=0,client=0,request=0,sequence=0,jobEpoch=0,jobId=0;
+    if (count!=7 || !number(1,epoch) || !epoch || epoch>UINT32_MAX ||
+        !number(2,client,16) || !client || !number(3,request) || !request || request>UINT32_MAX ||
+        !number(4,sequence) || !sequence || sequence>UINT32_MAX || !number(5,jobEpoch) || jobEpoch>UINT32_MAX ||
+        !number(6,jobId) || jobId>UINT32_MAX) {
+      gateway_.publish("INVALID flow_cal_operation_fields"); return;
+    }
+    const bool noJobKey = jobEpoch == 0 && jobId == 0;
+    if ((jobEpoch == 0) != (jobId == 0) || (mark && noJobKey)) {
+      gateway_.publish("INVALID flow_cal_operation_fields"); return;
+    }
+    auto flow=store_.flowCalibration();
+    if (epoch!=store_.state().epoch || flow.client!=client || flow.request!=request ||
+        (!noJobKey && flow.key!=JobKey{uint32_t(jobEpoch),uint32_t(jobId)})) {
+      flowCalibrationStatus(Reply::Stale,client,uint32_t(request)); return;
+    }
+    if (!mark) {
+      pump_.stop(now);
+      if (flow.operationSequence==sequence && flow.operation==FlowCalibrationOperation::Stop) {
+        flowCalibrationStatus(Reply::Ok); return;
+      }
+      if (flow.operationSequence==UINT32_MAX || sequence<=flow.operationSequence ||
+          !(flow.phase==FlowCalibrationPhase::Starting || flow.phase==FlowCalibrationPhase::Preout ||
+            flow.phase==FlowCalibrationPhase::MarkPending ||
+            flow.phase==FlowCalibrationPhase::Measuring || flow.phase==FlowCalibrationPhase::Unknown ||
+            flow.phase==FlowCalibrationPhase::Stopping)) {
+        flowCalibrationStatus(Reply::NotReady,client,uint32_t(request)); return;
+      }
+      flow.operationSequence=uint32_t(sequence); flow.operation=FlowCalibrationOperation::Stop;
+      flow.phase=FlowCalibrationPhase::Stopping;
+      const bool persisted = store_.writeFlowCalibration(flow);
+      if (!persisted) storageHealthy_=false;
+      if (scheduler_.active() && scheduler_.report().key==flow.key) scheduler_.stop(Reason::Manual,now);
+      else {
+        auto close=packet(Op::Close,flow.address); Writer w{close}; w.key(flow.key); w.u8(uint8_t(Reason::Manual));
+        if (!mesh_.send(close)) {
+          flow.phase=FlowCalibrationPhase::Unknown; flow.reason=Reason::Transport;
+          if (!store_.writeFlowCalibration(flow)) storageHealthy_=false;
+          flowCalibrationStatus(persisted ? Reply::NotReady : Reply::Storage); return;
+        }
+      }
+      flowCalibrationStatus(persisted ? Reply::Ok : Reply::Storage); return;
+    }
+    if (epoch!=flow.key.epoch || !scheduler_.active() || scheduler_.report().key!=flow.key ||
+        flow.operationSequence==UINT32_MAX || sequence!=flow.operationSequence+1 ||
+        flow.phase!=FlowCalibrationPhase::Preout || flow.marked) {
+      flowCalibrationStatus(Reply::NotReady,client,uint32_t(request)); return;
+    }
+    flow.operationSequence=uint32_t(sequence); flow.operation=FlowCalibrationOperation::Mark;
+    flow.phase=FlowCalibrationPhase::MarkPending;
+    if (!store_.writeFlowCalibration(flow)) {
+      storageHealthy_=false; scheduler_.stop(Reason::Transport,now); flowCalibrationStatus(Reply::Storage); return;
+    }
+    const Reply result=scheduler_.markCalibration(now);
+    if (result!=Reply::Ok) {
+      flow.phase=FlowCalibrationPhase::Invalid; flow.reason=Reason::Transport;
+      if (!store_.writeFlowCalibration(flow)) storageHealthy_=false;
+      scheduler_.stop(Reason::Transport,now); flowCalibrationStatus(result); return;
+    }
+    flowCalibrationStatus(Reply::Pending); return;
+  }
+  if (!strcmp(op,"flow-cal-query")) {
+    uint64_t epoch=0,client=0,request=0,jobEpoch=0,jobId=0;
+    const bool hasKey=count==6;
+    if ((count!=4 && !hasKey) || !number(1,epoch) || !epoch || epoch>UINT32_MAX ||
+        !number(2,client,16) || !client || !number(3,request) || !request || request>UINT32_MAX ||
+        (hasKey && (!number(4,jobEpoch) || jobEpoch>UINT32_MAX || !number(5,jobId) || jobId>UINT32_MAX ||
+          ((jobEpoch==0)!=(jobId==0))))) {
+      gateway_.publish("INVALID flow_cal_query_fields"); return;
+    }
+    if (epoch!=store_.state().epoch) { flowCalibrationStatus(Reply::Stale,client,uint32_t(request)); return; }
+    const auto &flow=store_.flowCalibration();
+    if (flow.client!=client || flow.request!=request || (hasKey && jobEpoch &&
+        flow.key!=JobKey{uint32_t(jobEpoch),uint32_t(jobId)})) {
+      flowCalibrationStatus(Reply::Unknown,client,uint32_t(request)); return;
+    }
+    flowCalibrationStatus(Reply::Ok); return;
+  }
   if (!strcmp(op, "cal-get") || !strcmp(op, "cal-set")) {
     const bool write = !strcmp(op, "cal-set");
     uint64_t epoch=0, request=0, slot=0, address=0, revision=0, baseK=0, baseVersion=0, low=0, medium=0, high=0;
@@ -367,7 +545,7 @@ void Application::command(CommandLine &line, uint32_t now) {
     Reply result = Reply::Ok;
     if (epoch != store_.state().epoch || revision != pwmRevision_ || pwmRevision_ == UINT32_MAX) result = Reply::Stale;
     else if (!storageHealthy_) result = Reply::Storage;
-    else if (scheduler_.active() || store_.state().lastJob.unknown || mesh_.managementBusy()) result = Reply::Busy;
+    else if (scheduler_.active() || flowCalibrationLocked() || store_.state().lastJob.unknown || mesh_.managementBusy()) result = Reply::Busy;
     else {
       result = pump_.setSpeed(uint8_t(level), now);
       if (result == Reply::Ok) ++pwmRevision_;
@@ -414,7 +592,7 @@ void Application::command(CommandLine &line, uint32_t now) {
       if (replay != Reply::Pending) { pumpTestReply(q, replay, now); return; }
     } else if (free < 0) { pumpTestReply(q, Reply::Capacity, now); return; }
     if (!storageHealthy_) { pumpTestReply(q, Reply::Storage, now); return; }
-    if (scheduler_.active() || pump_.testing() || mesh_.managementBusy()) { pumpTestReply(q, Reply::Busy, now); return; }
+    if (scheduler_.active() || flowCalibrationLocked() || pump_.testing() || mesh_.managementBusy()) { pumpTestReply(q, Reply::Busy, now); return; }
     if (!pump_.testReady(now) || persisted.lastJob.unknown) { pumpTestReply(q, Reply::NotReady, now); return; }
     if (dryRun && pwmRevision_ == UINT32_MAX) { pumpTestReply(q, Reply::Stale, now); return; }
     if (persisted.jobCounter == UINT32_MAX) { pumpTestReply(q, Reply::Stale, now); return; }
@@ -608,6 +786,28 @@ void Application::calibrationState(uint32_t request, size_t slot, Reply reply) {
     (unsigned long)value.low,(unsigned long)value.medium,(unsigned long)value.high,replyName(reply));
   gateway_.publish(line);
 }
+void Application::flowCalibrationStatus(Reply reply, uint64_t client, uint32_t request) {
+  const auto &stored=store_.flowCalibration();
+  const bool overrideIdentity=client || request;
+  const FlowCalibrationState empty{};
+  const auto &s=overrideIdentity && (stored.client!=client || stored.request!=request) ? empty : stored;
+  const JobKey key=s.key;
+  uint32_t livePulses=0, runtimeMs=0;
+  const int index=key.valid() ? scheduler_.find(s.address) : -1;
+  if (index>=0) {
+    const auto &live=scheduler_.node(size_t(index)).live;
+    if (live.seen && live.key==key) { livePulses=live.pulses; runtimeMs=live.runtimeMs; }
+  }
+  char line[192];
+  snprintf(line,sizeof(line),"FC e=%lu c=%llx q=%lu j=%lu:%lu s=%u a=%04x p=%u o=%lu r=%u ml=%lu v=%u b=%lu x=%lu f=%lu n=%lu t=%lu w=%u",
+    (unsigned long)store_.state().epoch,(unsigned long long)(overrideIdentity?client:s.client),
+    (unsigned long)(overrideIdentity?request:s.request),(unsigned long)key.epoch,(unsigned long)key.id,
+    unsigned(s.slot),s.address,unsigned(s.phase),(unsigned long)s.operationSequence,
+    unsigned(reply),(unsigned long)s.standardMl,unsigned(s.speed),(unsigned long)s.startPulses,
+    (unsigned long)s.closePulses,(unsigned long)s.finalPulses,(unsigned long)livePulses,
+    (unsigned long)runtimeMs,unsigned(s.reason));
+  gateway_.publish(line);
+}
 void Application::meshState(uint32_t request) {
   const auto &s=mesh_.management(); char line[192];
   snprintf(line,sizeof(line),"MESH epoch=%lu req=%lu op=%lu scan=%lu phase=%s busy=%u capable=%u reason=%s found=%u target=%04x remove=1",
@@ -771,6 +971,23 @@ void Application::run() {
     for (unsigned count = 0; count < 4 && mesh_.receive(p); ++count) incoming(p, now);
     CommandLine commandLine; if (gateway_.receive(commandLine)) command(commandLine, now);
     scheduler_.tick(now);
+    const auto &calibration = store_.flowCalibration();
+    if (calibration.phase == FlowCalibrationPhase::Starting &&
+        scheduler_.report().key == calibration.key) {
+      if (scheduler_.report().phase == SchedulePhase::Supplying && pump_.output()) {
+        auto next = calibration; next.phase = FlowCalibrationPhase::Preout;
+        if (store_.writeFlowCalibration(next)) flowCalibrationStatus(Reply::Ok);
+        else {
+          storageHealthy_ = false; pump_.stop(now); scheduler_.stop(Reason::Transport, now);
+          flowCalibrationStatus(Reply::Storage);
+        }
+      } else if (!scheduler_.active() && scheduler_.report().phase == SchedulePhase::Failed) {
+        auto next = calibration; next.phase = FlowCalibrationPhase::Invalid;
+        next.reason = scheduler_.report().reason;
+        if (!store_.writeFlowCalibration(next)) storageHealthy_ = false;
+        flowCalibrationStatus(storageHealthy_ ? Reply::NotReady : Reply::Storage);
+      }
+    }
     if (previousOutput != pump_.output()) {
       previousOutput=pump_.output(); ESP_LOGI("output","t=%lu command=%u",(unsigned long)now,previousOutput);
     }

@@ -51,7 +51,8 @@ uint32_t MasterScheduler::coefficient(size_t slot) const {
   return n.calibration.valid() ? n.calibration.coefficient(pump_.speed()) : n.config.k;
 }
 uint16_t MasterScheduler::features(size_t slot) const {
-  return RequiredFeatures | (nodes_[slot].calibration.valid() ? JobCalibrationFeature : 0);
+  return RequiredFeatures | (nodes_[slot].calibration.valid() ? JobCalibrationFeature : 0) |
+      (manualCalibration_ ? ManualCalibrationFeature : 0);
 }
 Reply MasterScheduler::setCalibration(size_t slot, const SpeedCalibration &value) {
   if (active() || pump_.output() || pump_.testing()) return Reply::Busy;
@@ -75,6 +76,18 @@ Reply MasterScheduler::check(uint32_t mask, uint32_t ml, uint32_t maxMs, uint32_
   }
   return Reply::Ok;
 }
+Reply MasterScheduler::checkCalibration(size_t slot, uint32_t standardMl, uint8_t speed, uint32_t maxMs, uint32_t now) {
+  if (active()) return Reply::Busy;
+  if (slot >= MaxNodes || standardMl < 50 || standardMl > 2000 || speed < 1 || speed > 3 ||
+      !maxMs || maxMs > 60000) return Reply::Invalid;
+  if (pump_.speed() != speed) return Reply::NotReady;
+  if (!pump_.ready(now)) return Reply::NotReady;
+  const auto &n = nodes_[slot];
+  if (!n.config.address || !n.seen || elapsed(now,n.seenAt,15000)) return Reply::Offline;
+  if (!n.commissioned) return Reply::NotReady;
+  if (n.status.phase >= Phase::Prepared && n.status.phase <= Phase::Settling) return Reply::Busy;
+  return Reply::Ok;
+}
 void MasterScheduler::restore(const JobReport &report, const ValveStatus results[MaxNodes]) {
   report_ = report;
   stopReason_ = report.reason;
@@ -87,8 +100,11 @@ void MasterScheduler::restore(const JobReport &report, const ValveStatus results
     }
   }
 }
-void MasterScheduler::begin(JobKey key, uint32_t mask, uint32_t ml, uint32_t maxMs, uint32_t now, const uint8_t *amounts) {
+void MasterScheduler::begin(JobKey key, uint32_t mask, uint32_t ml, uint32_t maxMs, uint32_t now,
+                            const uint8_t *amounts, bool manualCalibration) {
   report_ = {}; report_.key = key; report_.selected = remaining_ = mask;
+  manualCalibration_ = manualCalibration; calibrationMarked_ = calibrationMarkPending_ = false;
+  calibrationStartPulses_ = calibrationMarkAt_ = 0; calibrationMarkAttempts_ = 0;
   ml_ = ml; maxMs_ = maxMs; pumpSeq_ = 0; abort_ = false; stopReason_ = Reason::None;
   capNonce_ = key.epoch ^ (key.id * 2654435761U); if (!capNonce_) capNonce_ = 1;
   preflight_ = true;
@@ -127,12 +143,13 @@ MeshTxGovernor::Admission MasterScheduler::sendNode(size_t i, Op op) {
   if (op == Op::Prepare) {
     const uint32_t ml = ml_ ? ml_ : uint32_t(amounts_[i]) * 50;
     const uint32_t k = coefficient(i);
-    uint32_t pulses = 0; targetPulses(ml, k, pulses);
+    uint32_t pulses = 0; if (!manualCalibration_) targetPulses(ml, k, pulses);
     w.u32(ml); w.u32(pulses); w.u32(k);
     w.u32(nodes_[i].config.version); w.u32(maxMs_);
     const uint16_t speed = pump_.speed() == 1 ? SpeedLowPermille : pump_.speed() == 2 ? SpeedMediumPermille : SpeedHighPermille;
     w.u16(speed); w.u32(LeaseMs);
-    w.u8((nodes_[i].calibration.valid() ? PrepareCalibrated : 0) | PrepareLiveTelemetry); w.u32(leaseFloor_);
+    w.u8((nodes_[i].calibration.valid() ? PrepareCalibrated : 0) | PrepareLiveTelemetry |
+         (manualCalibration_ ? PrepareManualCalibration : 0)); w.u32(leaseFloor_);
   }
   if (op == Op::Prepare) return net_.prepare(p);
   return net_.send(p) ? MeshTxGovernor::Admission::Accepted : MeshTxGovernor::Admission::Failed;
@@ -149,9 +166,40 @@ void MasterScheduler::stop(Reason r, uint32_t now) {
   pump_.stop(now); // Always local pump first, before any radio operation.
   if (!active()) return;
   if (abort_ && report_.phase == SchedulePhase::Draining) return;
-  abort_ = true; stopReason_ = report_.reason = r; report_.failed |= remaining_ | (batch_ & ~final_); remaining_ = 0;
+  abort_ = true; stopReason_ = report_.reason = r;
+  if (!(manualCalibration_ && r == Reason::Manual && calibrationMarked_))
+    report_.failed |= remaining_ | (batch_ & ~final_);
+  remaining_ = 0; calibrationMarkPending_ = false;
   net_.fence(report_.key);
   closeBatch(r); report_.phase = SchedulePhase::Draining; stageAt_ = closeAt_ = now; txAt_ = now;
+}
+Reply MasterScheduler::markCalibration(uint32_t now) {
+  if (!manualCalibration_ || abort_ || report_.phase != SchedulePhase::Supplying || calibrationMarked_)
+    return Reply::NotReady;
+  if (calibrationMarkPending_) return Reply::Pending;
+  size_t target = MaxNodes;
+  for (size_t i=0;i<MaxNodes;++i) if (batch_ & (uint32_t(1)<<i)) { target=i; break; }
+  if (target == MaxNodes || (opened_ & (uint32_t(1)<<target)) == 0 || (closed_ & (uint32_t(1)<<target))) return Reply::NotReady;
+  auto p=packet(Op::MeasureMark,nodes_[target].config.address); Writer w{p}; w.key(report_.key);
+  if (!net_.send(p)) return Reply::NotReady;
+  calibrationMarkPending_=true; calibrationMarkAt_=now; calibrationMarkAttempts_=1;
+  return Reply::Ok;
+}
+bool MasterScheduler::calibrationMarkAck(uint16_t source, JobKey key, uint32_t pulses, Reply reply, uint32_t now) {
+  const int index=find(source);
+  if (index<0 || !manualCalibration_ || key!=report_.key || abort_ ||
+      report_.phase!=SchedulePhase::Supplying || !(batch_ & (uint32_t(1)<<index)) ||
+      !(opened_ & (uint32_t(1)<<index)) || (closed_ & (uint32_t(1)<<index))) return false;
+  if (calibrationMarked_) return reply == Reply::Ok && pulses==calibrationStartPulses_;
+  if (!calibrationMarkPending_ || elapsed(now,calibrationMarkAt_,CriticalQueueTtlMs)) return false;
+  calibrationMarkPending_=false;
+  if (reply != Reply::Ok) {
+    report_.failed |= uint32_t(1) << index;
+    stop(Reason::Transport,now);
+    return true;
+  }
+  calibrationStartPulses_=pulses; calibrationMarked_=true; calibrationMarkPending_=false;
+  return true;
 }
 bool MasterScheduler::summary(uint16_t source, JobKey key, uint32_t pulses, uint32_t revision, uint32_t now) {
   const int i = find(source); if (i < 0) return false;
@@ -201,7 +249,9 @@ void MasterScheduler::status(uint16_t source, const ValveStatus &s, uint32_t now
       report_.complete |= bit;
       report_.unknown &= ~bit;
       if (s.reason == Reason::Reboot) report_.unknown |= bit;
-      if (s.reason != Reason::Target || !s.quiet || s.truncated) report_.failed |= bit;
+      const bool validCalibration = manualCalibration_ && s.reason == Reason::Manual && s.quiet && !s.truncated &&
+          calibrationMarked_ && s.closePulses > calibrationStartPulses_;
+      if (manualCalibration_ ? !validCalibration : (s.reason != Reason::Target || !s.quiet || s.truncated)) report_.failed |= bit;
       if ((report_.complete & report_.selected) == report_.selected && !report_.unknown)
         report_.phase = report_.failed ? SchedulePhase::Failed : SchedulePhase::Complete;
       else if (report_.unknown || report_.failed) report_.phase = SchedulePhase::Failed;
@@ -224,7 +274,9 @@ void MasterScheduler::status(uint16_t source, const ValveStatus &s, uint32_t now
   if (s.phase == Phase::Done || s.phase == Phase::Fault) {
     final_ |= bit; report_.complete |= bit;
     if (s.reason == Reason::Reboot) report_.unknown |= bit;
-    if (s.reason != Reason::Target || !s.quiet || s.truncated) report_.failed |= bit;
+    const bool validCalibration = manualCalibration_ && s.reason == Reason::Manual && s.quiet && !s.truncated &&
+        calibrationMarked_ && s.closePulses > calibrationStartPulses_;
+    if (manualCalibration_ ? !validCalibration : (s.reason != Reason::Target || !s.quiet || s.truncated)) report_.failed |= bit;
   }
 }
 void MasterScheduler::submissions(uint32_t now) {
@@ -378,6 +430,22 @@ bool MasterScheduler::result(uint16_t source, const ValveStatus &s, uint32_t now
 void MasterScheduler::tick(uint32_t now) {
   submissions(now);
   if (!active()) return;
+  if (calibrationMarkPending_ && report_.phase == SchedulePhase::Supplying) {
+    if (elapsed(now,calibrationMarkAt_,CriticalQueueTtlMs)) {
+      guard_="CALIBRATION_MARK_TIMEOUT";
+      stop(Reason::Transport,now);
+      return;
+    }
+    if (calibrationMarkAttempts_ < 4 && elapsed(now,calibrationMarkAt_,500U * calibrationMarkAttempts_)) {
+      size_t target=MaxNodes;
+      for (size_t i=0;i<MaxNodes;++i) if (batch_ & (uint32_t(1)<<i)) { target=i; break; }
+      if (target<MaxNodes) {
+        auto p=packet(Op::MeasureMark,nodes_[target].config.address); Writer w{p}; w.key(report_.key);
+        if (!net_.send(p)) { guard_="TX_ERROR"; stop(Reason::Transport,now); return; }
+        ++calibrationMarkAttempts_;
+      }
+    }
+  }
   if (!net_.healthy() && report_.phase != SchedulePhase::Draining) { guard_="TX_ERROR"; stop(Reason::Transport,now); }
   if (pump_.phase() == PumpPhase::Fault && report_.phase != SchedulePhase::Draining) stop(Reason::PumpFault,now);
   if (report_.phase == SchedulePhase::Between) {

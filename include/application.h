@@ -27,8 +27,10 @@ class Application {
   void meshState();
   void pumpPwmState(Reply reply = Reply::Ok);
   void calibrationState(uint32_t request, size_t slot, Reply reply);
+  void flowCalibrationStatus(Reply reply = Reply::Ok, uint64_t client = 0, uint32_t request = 0);
   void pumpTestReply(const ControlRequest &q, Reply result, uint32_t now);
   bool idle() const;
+  bool flowCalibrationLocked() const;
   void meshState(uint32_t request);
   void beginInventory(uint32_t request, uint32_t now);
   void inventoryTick(uint32_t now);
@@ -63,6 +65,9 @@ class Application {
   bool testOutputPublished_ = false;
   uint32_t testPublishedAt_ = 0;
   uint32_t pwmRevision_ = 0;
+  uint32_t flowCalibrationPublishAt_ = 0;
+  uint32_t flowCalibrationPublishedPulses_ = 0;
+  uint8_t flowCalibrationPublishedPhase_ = 0xFF;
   uint16_t ownerIngress_ = 0;
   const char *lastGuard_ = "NONE";
   SchedulePhase lastPhase_ = SchedulePhase::Idle;

@@ -59,9 +59,13 @@ class MasterScheduler {
   Reply unregisterNode(size_t slot, uint16_t address);
   Reply setCalibration(size_t slot, const SpeedCalibration &value);
   Reply check(uint32_t mask, uint32_t ml, uint32_t maxMs, uint32_t now, const uint8_t *amounts = nullptr);
+  Reply checkCalibration(size_t slot, uint32_t standardMl, uint8_t speed, uint32_t maxMs, uint32_t now);
   void restore(const JobReport &report, const ValveStatus results[MaxNodes]);
-  void begin(JobKey key, uint32_t mask, uint32_t ml, uint32_t maxMs, uint32_t now, const uint8_t *amounts = nullptr);
+  void begin(JobKey key, uint32_t mask, uint32_t ml, uint32_t maxMs, uint32_t now,
+             const uint8_t *amounts = nullptr, bool manualCalibration = false);
   void stop(Reason reason, uint32_t now);
+  Reply markCalibration(uint32_t now);
+  bool calibrationMarkAck(uint16_t source, JobKey key, uint32_t pulses, Reply reply, uint32_t now);
   void tick(uint32_t now);
   void hello(uint16_t source, uint32_t k, uint32_t version, bool commissioned, uint32_t now,
              uint32_t buildId = 0);
@@ -73,6 +77,10 @@ class MasterScheduler {
   bool result(uint16_t source, const ValveStatus &s, uint32_t now);
   bool summary(uint16_t source, JobKey key, uint32_t pulses, uint32_t revision, uint32_t now);
   bool progress(uint16_t source, JobKey key, uint32_t pulses, uint32_t runtimeMs, uint32_t now);
+  bool manualCalibration() const { return manualCalibration_; }
+  bool calibrationMarked() const { return calibrationMarked_; }
+  bool calibrationMarkPending() const { return calibrationMarkPending_; }
+  uint32_t calibrationStartPulses() const { return calibrationStartPulses_; }
   bool capabilities(uint16_t source, uint32_t nonce, uint16_t revision, uint16_t features, uint32_t buildId, uint32_t now);
   void submissions(uint32_t now);
   bool active() const;
@@ -107,6 +115,9 @@ class MasterScheduler {
   Reason stopReason_ = Reason::None;
   uint32_t capNonce_ = 0, bootstrapAt_ = 0;
   bool preflight_ = false, bootstrap_ = false;
+  bool manualCalibration_ = false, calibrationMarked_ = false, calibrationMarkPending_ = false;
+  uint32_t calibrationStartPulses_ = 0, calibrationMarkAt_ = 0;
+  uint8_t calibrationMarkAttempts_ = 0;
   uint32_t leaseFloor_ = 0; size_t commandCursor_ = 0;
   const char *guard_ = "NONE";
 };

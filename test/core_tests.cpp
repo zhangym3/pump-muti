@@ -112,7 +112,8 @@ struct ScheduleFixture {
     for (unsigned pass=0;pass<4;++pass) {
       scheduler.tick(now);
       for (const auto &p:net.sent) if (p.op==Op::CapabilitiesGet) {
-        Reader r{p}; scheduler.capabilities(p.peer,r.u32(),ProtocolRevision,RequiredFeatures,TestSlaveBuildId,now);
+        Reader r{p}; scheduler.capabilities(p.peer,r.u32(),ProtocolRevision,
+            RequiredFeatures | ManualCalibrationFeature,TestSlaveBuildId,now);
       }
     }
   }
@@ -150,6 +151,65 @@ void scheduler_cancel_retries_and_timeout() {
   for (uint32_t t=205;t<10300;t+=5) { if (t % 100 == 0) f.scheduler.stop(Reason::Manual,t); f.pump.tick(t); f.tick(t); }
   CHECK(f.net.count(Op::Close) >= 10);
   CHECK(!f.scheduler.active() && f.scheduler.report().unknown == 1 && !f.io.on);
+}
+void scheduler_calibration_can_stop_before_open_ack() {
+  ScheduleFixture f;
+  f.scheduler.begin({1,1},1,500,60000,100,nullptr,true);
+  f.tick(150);
+  CHECK(f.scheduler.report().phase == SchedulePhase::Preparing && !f.io.on);
+  f.scheduler.stop(Reason::Manual,160);
+  CHECK(!f.io.on && f.scheduler.report().phase == SchedulePhase::Draining);
+  CHECK(f.net.count(Op::Close) == 1);
+  f.scheduler.stop(Reason::Manual,170);
+  CHECK(f.net.count(Op::Close) >= 1 && !f.io.on);
+}
+void scheduler_manual_calibration_ack_and_terminal_result() {
+  ScheduleFixture f;
+  CHECK(f.scheduler.checkCalibration(0,500,1,60000,100)==Reply::Ok);
+  f.scheduler.begin({1,1},1,500,60000,100,nullptr,true);
+  f.net.now=150; f.scheduler.tick(150);
+  Packet probe; bool found=false;
+  for (const auto &p:f.net.sent) if (p.op==Op::CapabilitiesGet) { probe=p; found=true; }
+  CHECK(found); Reader nonce{probe};
+  CHECK(f.scheduler.capabilities(2,nonce.u32(),ProtocolRevision,
+      RequiredFeatures|ManualCalibrationFeature,TestSlaveBuildId,150));
+  f.tick(151);
+  f.status(0,Phase::Prepared,Reason::None,1,200);
+  f.tick(250);
+  f.status(0,Phase::Opening,Reason::None,2,300);
+  f.prove(300);
+  CHECK(f.io.on && f.scheduler.report().phase==SchedulePhase::Supplying);
+
+  CHECK(f.scheduler.markCalibration(400)==Reply::Ok);
+  CHECK(f.net.sent.back().op==Op::MeasureMark && f.net.sent.back().peer==2);
+  Reader mark{f.net.sent.back()}; CHECK(mark.key()==JobKey{1,1} && mark.done());
+  CHECK(!f.scheduler.calibrationMarkAck(3,{1,1},100,Reply::Ok,401));
+  CHECK(!f.scheduler.calibrationMarkAck(2,{1,2},100,Reply::Ok,401));
+  CHECK(f.scheduler.calibrationMarkAck(2,{1,1},100,Reply::Ok,401));
+  CHECK(f.scheduler.calibrationMarkAck(2,{1,1},100,Reply::Ok,402));
+  CHECK(!f.scheduler.calibrationMarkAck(2,{1,1},101,Reply::Ok,402));
+  CHECK(f.scheduler.markCalibration(402)==Reply::NotReady);
+
+  f.scheduler.stop(Reason::Manual,500);
+  CHECK(!f.io.on && f.scheduler.report().failed==0);
+  ValveStatus terminal; terminal.key={1,1}; terminal.k=1000;
+  terminal.phase=Phase::Done; terminal.reason=Reason::Manual;
+  terminal.quiet=true; terminal.closePulses=2400; terminal.pulses=2415; terminal.revision=3;
+  CHECK(f.scheduler.result(2,terminal,1100));
+  CHECK(f.scheduler.report().complete==1 && f.scheduler.report().failed==0);
+  CHECK(f.scheduler.node(0).status.closePulses-100==2300);
+  CHECK(f.scheduler.node(0).status.pulses-f.scheduler.node(0).status.closePulses==15);
+
+  ScheduleFixture legacy;
+  legacy.scheduler.begin({1,1},1,500,60000,100,nullptr,true);
+  legacy.net.now=150; legacy.scheduler.tick(150);
+  Packet legacyProbe; found=false;
+  for (const auto &p:legacy.net.sent) if (p.op==Op::CapabilitiesGet) { legacyProbe=p; found=true; }
+  CHECK(found); Reader legacyNonce{legacyProbe};
+  CHECK(legacy.scheduler.capabilities(2,legacyNonce.u32(),ProtocolRevision,
+      RequiredFeatures,TestSlaveBuildId,150));
+  CHECK(legacy.scheduler.stopReason()==Reason::Protocol && !legacy.io.on);
+  CHECK(legacy.net.count(Op::Prepare)==0 && legacy.net.count(Op::Start)==0);
 }
 void scheduler_faults_and_ordering() {
   ScheduleFixture f; f.scheduler.begin({1,1},1,100,10000,100);
@@ -830,6 +890,8 @@ int main() {
     {"output-only pump and commissioning",pump_output_only_and_commissioning}, {"pump authorization and replay",pump_authorization_and_replay},
     {"pump stop cooldown and timer wrap",pump_stop_cooldown_and_wrap}, {"pump runtime and fault reset",pump_runtime_and_fault_reset},
     {"scheduler valve before pump",scheduler_order_and_completion}, {"cancel retries and bounded timeout",scheduler_cancel_retries_and_timeout},
+    {"manual calibration stop during startup",scheduler_calibration_can_stop_before_open_ack},
+    {"manual calibration capability, mark ACK and terminal result",scheduler_manual_calibration_ack_and_terminal_result},
     {"scheduler faults and message ordering",scheduler_faults_and_ordering}, {"32 logical nodes and sequential batches",thirty_two_nodes_and_batches},
     {"lease acknowledgement and timeout",lease_acknowledgements_and_timeout},
     {"stale lease acknowledgement stops pump as lease failure",stale_lease_ack_stops_pump_as_lease_failure},

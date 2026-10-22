@@ -32,6 +32,12 @@ bool Storage::open(uint32_t profile) {
   const auto addressErr = nvs_get_blob(handle_, "result_addrs", &addresses, &addressSize);
   if (addressErr != ESP_ERR_NVS_NOT_FOUND &&
       (addressErr != ESP_OK || !decodeResultAddresses(&addresses, addressSize, resultAddresses_))) return false;
+  size_t flowCalibrationSize = sizeof(flowCalibration_);
+  const auto flowCalibrationErr = nvs_get_blob(handle_, "flow_cal", &flowCalibration_, &flowCalibrationSize);
+  if (flowCalibrationErr != ESP_ERR_NVS_NOT_FOUND &&
+      (flowCalibrationErr != ESP_OK || flowCalibrationSize != sizeof(flowCalibration_) ||
+       !validFlowCalibrationState(flowCalibration_))) return false;
+  if (flowCalibrationErr == ESP_ERR_NVS_NOT_FOUND) flowCalibration_ = {};
   if (state_.epoch == UINT32_MAX) return false;
   ++state_.epoch;
   if (state_.lastJob.phase >= SchedulePhase::Preparing && state_.lastJob.phase <= SchedulePhase::Between) {
@@ -39,7 +45,24 @@ bool Storage::open(uint32_t profile) {
     state_.lastJob.reason = Reason::Reboot;
     state_.lastJob.unknown |= state_.lastJob.selected & ~state_.lastJob.complete;
   }
+  if (flowCalibration_.phase == FlowCalibrationPhase::Starting ||
+      flowCalibration_.phase == FlowCalibrationPhase::Preout ||
+      flowCalibration_.phase == FlowCalibrationPhase::MarkPending ||
+      flowCalibration_.phase == FlowCalibrationPhase::Measuring ||
+      flowCalibration_.phase == FlowCalibrationPhase::Stopping) {
+    flowCalibration_.phase = FlowCalibrationPhase::Unknown;
+    if (!writeFlowCalibration(flowCalibration_)) return false;
+  }
   return write(state_);
+}
+bool Storage::writeFlowCalibration(const FlowCalibrationState &value) {
+  if (!handle_ || !validFlowCalibrationState(value) ||
+      nvs_set_blob(handle_, "flow_cal", &value, sizeof(value)) != ESP_OK || nvs_commit(handle_) != ESP_OK) return false;
+  FlowCalibrationState verify; size_t size = sizeof(verify);
+  if (nvs_get_blob(handle_, "flow_cal", &verify, &size) != ESP_OK || size != sizeof(value) ||
+      memcmp(&verify, &value, size)) return false;
+  flowCalibration_ = value;
+  return true;
 }
 bool Storage::write(const PersistentState &next) {
   if (!handle_ || nvs_set_blob(handle_, "state", &next, sizeof(next)) != ESP_OK ||
