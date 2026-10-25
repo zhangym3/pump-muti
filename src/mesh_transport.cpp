@@ -48,6 +48,10 @@ esp_ble_mesh_model_op_t operations[] = {
   {ESP_BLE_MESH_MODEL_OP_3(0xD6, CompanyId), 16, 0},
   {ESP_BLE_MESH_MODEL_OP_3(0xD7, CompanyId), 8, 0},
   {ESP_BLE_MESH_MODEL_OP_3(0xD8, CompanyId), 13, 0},
+  {ESP_BLE_MESH_MODEL_OP_3(0xD9, CompanyId), 8, 0},
+  {ESP_BLE_MESH_MODEL_OP_3(0xDA, CompanyId), 14, 0},
+  {ESP_BLE_MESH_MODEL_OP_3(0xDB, CompanyId), 16, 0},
+  {ESP_BLE_MESH_MODEL_OP_3(0xDC, CompanyId), 12, 0},
   ESP_BLE_MESH_MODEL_OP_END
 };
 esp_ble_mesh_client_t meshConfigClient;
@@ -69,12 +73,12 @@ void modelCb(esp_ble_mesh_model_cb_event_t event, esp_ble_mesh_model_cb_param_t 
   if (!m.ctx || m.ctx->net_idx != 0 || m.ctx->app_idx != 0 ||
       m.length > sizeof(Packet::bytes) || (m.opcode & 0xFFFF) != CompanyId) return;
   const uint8_t code = uint8_t(m.opcode >> 16);
-  if (code < uint8_t(Op::Prepare) || code > uint8_t(Op::MeasureMarkAck)) return;
+  if (code < uint8_t(Op::Prepare) || code > uint8_t(Op::MaintenanceRetire)) return;
   auto in = packet(Op(code), m.ctx->addr); in.size = uint8_t(m.length);
   memcpy(in.bytes, m.msg, in.size); instance->incoming(in);
 }
 bool urgent(const Packet &p) {
-  return p.op == Op::TargetClosed || p.op == Op::TargetClosedAck || p.op == Op::PrepareOK || p.op == Op::StartOK || p.op == Op::Close || p.op == Op::Lease || p.op == Op::LeaseAck || p.op == Op::MeasureMarkAck ||
+  return p.op == Op::NodeState || p.op == Op::ModeGet || p.op == Op::MaintenanceRetire || p.op == Op::TargetClosed || p.op == Op::TargetClosedAck || p.op == Op::PrepareOK || p.op == Op::StartOK || p.op == Op::Close || p.op == Op::Lease || p.op == Op::LeaseAck || p.op == Op::MeasureMarkAck ||
     p.op == Op::Result || p.op == Op::ResultAck || p.op == Op::CommandAck ||
     (p.op == Op::Request && p.size && p.bytes[0] == uint8_t(Action::Stop));
 }
@@ -172,7 +176,7 @@ void MeshTransport::incoming(const Packet &p) {
   if (p.op != Op::Hello && p.op != Op::Result && p.op != Op::Request &&
       p.op != Op::TargetClosed && p.op != Op::PrepareOK && p.op != Op::StartOK && p.op != Op::Progress &&
       p.op != Op::CommissionReply && p.op != Op::LeaseAck && p.op != Op::CommandAck &&
-      p.op != Op::Capabilities && p.op != Op::MeasureMarkAck) return;
+      p.op != Op::Capabilities && p.op != Op::MeasureMarkAck && p.op != Op::NodeState) return;
   if (xQueueSend(urgent(p) ? urgentRx_ : rx_, &p, 0) != pdTRUE && urgent(p)) overflow_ = true;
 }
 bool MeshTransport::receive(Packet &p) {

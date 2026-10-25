@@ -1,5 +1,6 @@
 #include "master_scheduler.h"
 #include "control_request.h"
+#include "result_commit.h"
 namespace pump {
 bool MasterScheduler::active() const {
   return report_.phase >= SchedulePhase::Preparing && report_.phase <= SchedulePhase::Between;
@@ -67,6 +68,8 @@ Reply MasterScheduler::check(uint32_t mask, uint32_t ml, uint32_t maxMs, uint32_
   if (active()) return Reply::Busy;
   if (!mask || (amounts ? ml != 0 || !validAmounts(mask, amounts) : !ml) ||
       !maxMs || maxMs > 240000 || !concurrent_ || concurrent_ > MaxNodes) return Reply::Invalid;
+  if (nodeCount(mask)>ProductMaxNodes) return Reply::Capacity;
+  if (nodeCount(mask)>concurrent_) return Reply::NotReady; // Never silently split a simultaneous task.
   if (!pump_.ready(now)) return Reply::NotReady;
   for (size_t i = 0; i < MaxNodes; ++i) if (mask & (uint32_t(1) << i)) {
     const auto &n = nodes_[i]; uint32_t pulses = 0;
@@ -146,6 +149,7 @@ MeshTxGovernor::Admission MasterScheduler::sendNode(size_t i, Op op) {
     uint32_t pulses = 0; if (!manualCalibration_) targetPulses(ml, k, pulses);
     w.u32(ml); w.u32(pulses); w.u32(k);
     w.u32(nodes_[i].config.version); w.u32(maxMs_);
+    // Preserve legacy wire speed tags for deployed slaves; actual PWM duty is reported by PUMP_PWM.
     const uint16_t speed = pump_.speed() == 1 ? SpeedLowPermille : pump_.speed() == 2 ? SpeedMediumPermille : SpeedHighPermille;
     w.u16(speed); w.u32(LeaseMs);
     w.u8((nodes_[i].calibration.valid() ? PrepareCalibrated : 0) | PrepareLiveTelemetry |
@@ -234,6 +238,8 @@ void MasterScheduler::status(uint16_t source, const ValveStatus &s, uint32_t now
   auto &n = nodes_[index]; n.seenAt = now; n.seen = true;
   // The detailed event counter rejects out-of-order phases within the same dose.
   if (s.key == n.status.key && s.revision < n.status.revision) return;
+  if (s.key == n.status.key && s.revision == n.status.revision && !sameResult(s,n.status)) return;
+  if (s.key == n.status.key && terminalResult(n.status) && n.status.reason!=Reason::Reboot && !sameMeasurement(s,n.status)) return;
   if (n.status.key.valid() && s.key != n.status.key && !s.key.newer(n.status.key)) return;
   if (s.key != n.status.key) n.telemetrySeen = false;
   n.status = s;
@@ -273,6 +279,7 @@ void MasterScheduler::status(uint16_t source, const ValveStatus &s, uint32_t now
   }
   if (s.phase == Phase::Done || s.phase == Phase::Fault) {
     final_ |= bit; report_.complete |= bit;
+    report_.unknown &= ~bit;
     if (s.reason == Reason::Reboot) report_.unknown |= bit;
     const bool validCalibration = manualCalibration_ && s.reason == Reason::Manual && s.quiet && !s.truncated &&
         calibrationMarked_ && s.closePulses > calibrationStartPulses_;
@@ -423,9 +430,9 @@ bool MasterScheduler::commandReply(uint16_t source, JobKey key, Op command, Repl
   guard_="COMMAND_REJECT"; report_.failed|=bit; stop(Reason::Transport,now); return true;
 }
 bool MasterScheduler::result(uint16_t source, const ValveStatus &s, uint32_t now) {
-  if (s.phase != Phase::Done && s.phase != Phase::Fault) return false;
+  if (!terminalResult(s) || find(source)<0) return false;
   status(source, s, now);
-  return true;
+  return sameResult(nodes_[find(source)].status,s);
 }
 void MasterScheduler::tick(uint32_t now) {
   submissions(now);
@@ -498,12 +505,15 @@ void MasterScheduler::tick(uint32_t now) {
       if (closed_ == batch_) { report_.phase=SchedulePhase::Draining; stageAt_=now; return; }
       leases(now); if (report_.phase != SchedulePhase::Opening) return;
       bool fresh = bootstrap_ && ((opened_ | closed_) & batch_) == batch_;
+      bool valvesReady = true;
       for (size_t i=0;i<MaxNodes;++i) if ((batch_ & (uint32_t(1)<<i)) && !(closed_ & (uint32_t(1)<<i))) {
         const auto &n=nodes_[i];
         if (n.leaseAckSeen && elapsed(now,n.leaseAckAt,2000)) guard_="LEASE_PROOF_OLD";
         if (!n.startIssued || !n.commandAccepted || !n.startAckSeen || !n.leaseAckSeen || elapsed(now,n.leaseAckAt,2000) || int32_t(n.leaseAckAt-n.startAckAt)<0) fresh=false;
+        if (!n.startAckSeen || !elapsed(now,n.startAckAt,ValveOpenLeadMs)) valvesReady=false;
       }
-      if (fresh) {
+      if (fresh && !valvesReady) guard_="VALVE_OPEN_WAIT";
+      if (fresh && valvesReady) {
         if (pump_.start(report_.key,++pumpSeq_,now)!=Reply::Ok) stop(Reason::PumpFault,now);
         else {
           guard_="NONE"; report_.phase=SchedulePhase::Supplying; stageAt_=pumpRenewAt_=now;

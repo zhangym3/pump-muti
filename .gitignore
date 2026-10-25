@@ -1,5 +1,8 @@
 .pio
 .mesh-sdk/
+.mesh-sdk-before-*/
+/artifacts/
+/compile_commands.json
 .mesh-sdk.*-backup-*/
 .vscode
 dist

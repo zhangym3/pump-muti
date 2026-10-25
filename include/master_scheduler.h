@@ -122,4 +122,7 @@ class MasterScheduler {
   const char *guard_ = "NONE";
 };
 constexpr uint32_t LeaseAckTimeoutMs = 8000;
+// Minimum time after each accepted StartOK before the pump may be energized.
+// StartOK proves the driver command, not mechanical valve position.
+constexpr uint32_t ValveOpenLeadMs = 300;
 }

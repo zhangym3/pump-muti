@@ -31,6 +31,9 @@ enum { ESP_BLE_MESH_TRACKED_ACCEPTED = 1, ESP_BLE_MESH_TRACKED_REJECTED,
 #define ESP_BLE_MESH_TX_SDU_MAX 444
 #define MIN(a,b) ((a) < (b) ? (a) : (b))
 #define ARRAY_SIZE(a) (sizeof(a)/sizeof((a)[0]))
+#define BIT(n) (1U << (n))
+#define TRANS_SEQ_ZERO_MASK 0x1fffU
+#define SAR_DIAG_LOG(...) ((void)0)
 #define BLE_MESH_ADDR_IS_UNICAST(a) ((a) > 0 && (a) < 0x8000)
 #define BT_ERR(...) ((void)0)
 #define BT_DBG(...) ((void)0)
@@ -51,7 +54,14 @@ typedef struct {
 } btc_ble_mesh_model_args_t;
 typedef struct { int sig, pid, act; void *arg; } btc_msg_t;
 struct bt_mesh_send_cb { void (*start)(uint16_t,int,void *); void (*end)(int,void *); };
-struct seg_tx { const struct bt_mesh_send_cb *cb; void *cb_data; uint16_t dst; };
+struct seg_tx {
+    const struct bt_mesh_send_cb *cb;
+    void *cb_data;
+    uint64_t seq_auth;
+    uint16_t src, dst;
+    uint8_t seg_n;
+    void *seg[32];
+};
 static struct seg_tx seg_tx[8];
 static int allocations, fail_allocation, live_allocations, core_error, core_calls, legacy_calls;
 static int buffer_allocations, transfer_error;
@@ -108,7 +118,7 @@ static int bt_mesh_model_send(struct bt_mesh_model *model, struct bt_mesh_msg_ct
                               struct net_buf_simple *buf, const struct bt_mesh_send_cb *cb, void *data) {
     ++core_calls; assert(ctx && model && buf->len==15 && buf->data[3]==0xa5);
     if (core_error) return core_error;
-    seg_tx[0]=(struct seg_tx){cb,data,ctx->addr};
+    seg_tx[0]=(struct seg_tx){.cb=cb,.cb_data=data,.dst=ctx->addr};
     if (early_end && cb) seg_tx_complete(&seg_tx[0],0);
     return 0;
 }

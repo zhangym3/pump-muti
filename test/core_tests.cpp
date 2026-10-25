@@ -2,6 +2,9 @@
 #include "master_scheduler.h"
 #include "persistent_state.h"
 #include "mesh_removal.h"
+#include "mesh_config_retry.h"
+#include "result_commit.h"
+#include "maintenance_session.h"
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -11,6 +14,36 @@
 using namespace pump;
 constexpr uint32_t TestSlaveBuildId = 0x12345678U;
 #define CHECK(...) do { if (!(__VA_ARGS__)) { std::fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #__VA_ARGS__); std::exit(1); } } while (false)
+
+void mesh_config_retry_policy() {
+  MeshConfigRetry retry;
+  retry.beginStep();
+  CHECK(retry.submitted(100) && retry.attempts() == 1 && retry.waiting());
+  CHECK(!retry.submitted(101));
+  CHECK(retry.timeout(15100) == MeshConfigRetry::TimeoutResult::RetryScheduled);
+  CHECK(!retry.waiting() && retry.retryPending());
+  CHECK(retry.remainingMs(15100) == 12000 && retry.remainingMs(27099) == 1);
+  CHECK(retry.remainingMs(27100) == 0);
+  CHECK(!retry.retryDue(27099) && retry.retryDue(27100));
+  CHECK(!retry.retryDue(27101));
+  CHECK(retry.submitted(27100) && retry.attempts() == 2);
+  CHECK(retry.response() && !retry.response());
+  retry.beginStep();
+  CHECK(retry.attempts() == 0 && retry.submitted(30000));
+  CHECK(retry.timeout(45000) == MeshConfigRetry::TimeoutResult::RetryScheduled);
+  CHECK(retry.retryDue(57000) && retry.submitted(57000));
+  CHECK(retry.timeout(72000) == MeshConfigRetry::TimeoutResult::RetryScheduled);
+  CHECK(retry.retryDue(84000) && retry.submitted(84000));
+  CHECK(retry.timeout(99000) == MeshConfigRetry::TimeoutResult::Exhausted);
+  CHECK(retry.timeout(100000) == MeshConfigRetry::TimeoutResult::Ignored);
+  retry.beginStep();
+  const uint32_t start = UINT32_MAX - 6000;
+  CHECK(retry.submitted(start));
+  CHECK(retry.timeout(start + MeshConfigRetry::ResponseTimeoutMs) == MeshConfigRetry::TimeoutResult::RetryScheduled);
+  CHECK(!retry.retryDue(start + MeshConfigRetry::ResponseTimeoutMs + MeshConfigRetry::SarCleanupDelayMs - 1));
+  CHECK(retry.retryDue(start + MeshConfigRetry::ResponseTimeoutMs + MeshConfigRetry::SarCleanupDelayMs));
+  std::puts("PASS Mesh config retry serialization, SAR cleanup delay, response ownership, bounded attempts and timer wrap");
+}
 
 struct FakePump : PumpIO {
   bool on = false;
@@ -135,15 +168,145 @@ struct ScheduleFixture {
     scheduler.status(uint16_t(i+2),s,now);
   }
 };
+void result_commit_and_reconciliation() {
+  ValveStatus s; s.key={1,1}; s.k=1000; s.phase=Phase::Done; s.reason=Reason::Target;
+  s.revision=4; s.pulses=105; s.closePulses=100; s.quiet=true;
+  ResultCommit durable; unsigned writes=0;
+  auto save=[&](const ValveStatus &) { ++writes; return true; };
+  CHECK(durable.commit(s,save) && durable.contains(s) && writes==1);
+  CHECK(durable.commit(s,save) && writes==1);
+  auto restored=s; restored.revision+=16;
+  CHECK(sameMeasurement(s,restored) && !sameResult(s,restored));
+  CHECK(durable.commit(restored,save) && writes==2);
+  ResultCommit failed;
+  CHECK(!failed.commit(s,[&](const ValveStatus &) { ++writes; return false; }));
+  CHECK(!failed.healthy() && !failed.contains(s));
+  CHECK(!failed.commit(s,save) && writes==3); // Failure stays latched; no ACK or retry-write loop.
+  for (unsigned invalid=0;invalid<6;++invalid) {
+    auto bad=s;
+    switch(invalid) {
+      case 0: bad.key={}; break; case 1: bad.revision=0; break;
+      case 2: bad.valveCommand=true; break; case 3: bad.closePulses=106; break;
+      case 4: bad.k=0; break; default: bad.reason=Reason(255); break;
+    }
+    ResultCommit c; CHECK(!terminalResult(bad) && !c.commit(bad,save) && !c.healthy());
+  }
+  ScheduleFixture f(5); f.scheduler.begin({1,1},1,100,10000,100);
+  CHECK(f.scheduler.result(2,s,200));
+  auto conflict=s; conflict.pulses++;
+  CHECK(!f.scheduler.result(2,conflict,201));
+  conflict.revision++; CHECK(!f.scheduler.result(2,conflict,202));
+  CHECK(f.scheduler.result(2,restored,203)); // Persisted measurement survives a slave restart.
+  CHECK(!f.scheduler.result(2,s,204));
+  CHECK(!f.scheduler.result(100,restored,205));
+  CHECK(sameResult(f.scheduler.node(0).status,restored));
+  ScheduleFixture reboot;
+  reboot.scheduler.begin({1,1},1,100,10000,100);
+  auto unknown=s; unknown.reason=Reason::Reboot; unknown.truncated=true; unknown.quiet=false;
+  unknown.pulses=unknown.closePulses=0; unknown.phase=Phase::Fault;
+  CHECK(reboot.scheduler.result(2,unknown,200));
+  CHECK(reboot.scheduler.result(2,restored,201));
+  CHECK(!reboot.scheduler.report().unknown);
+  ScheduleFixture capacity(5);
+  CHECK(capacity.scheduler.check(0x3f,100,10000,300)==Reply::Capacity);
+  std::puts("PASS durable result commit failure latch, invalid/duplicate results, revision conflicts and reboot reconciliation");
+}
+void maintenance_tokens_and_deadlines() {
+  MaintenanceSession s(42);
+  CHECK(!s.grant({1,2},0,60000,100) && !s.grant({1,2},41,60000,100));
+  CHECK(!s.grant({1,2},42,999,100) && !s.grant({1,2},42,60001,100));
+  CHECK(s.retire({1,1}) && s.retired({1,1}));
+  CHECK(!s.grant({1,1},42,60000,100));
+  CHECK(s.grant({1,2},42,1000,100) && s.allowed(1099));
+  CHECK(s.grant({1,2},42,60000,1099)); // Retransmission cannot extend the original lease.
+  CHECK(!s.allowed(1100) && s.retired({1,2}));
+  CHECK(!s.grant({1,2},42,60000,1101));
+  CHECK(s.grant({1,3},42,1000,1200));
+  CHECK(!s.retire({1,1}) && s.allowed(1201));
+  CHECK(s.retire({1,3}) && !s.allowed(1202));
+  CHECK(!s.grant({1,3},42,1000,1203));
+  CHECK(s.retire({1,5}) && !s.grant({1,4},42,1000,1204)); // Retire overtakes Grant.
+  s.boot(43); CHECK(!s.grant({1,6},42,1000,1300));
+  CHECK(s.retire({2,1}) && !s.grant({1,99},43,1000,1400)); // New master boot fences old packets.
+  const uint32_t at=UINT32_MAX-500;
+  CHECK(s.grant({2,2},43,1000,at) && s.allowed(at+999) && !s.allowed(at+1000));
+  CHECK(s.retired({2,2}) && !s.grant({2,2},43,1000,at+1001));
+  std::puts("PASS boot-bound maintenance tokens, lost/reordered grant, irreversible retirement, non-renewal and timer wrap");
+}
 void scheduler_order_and_completion() {
   ScheduleFixture f; CHECK(f.scheduler.check(1,100,10000,100) == Reply::Ok);
   f.scheduler.begin({1,1},1,100,10000,100); f.tick(150); CHECK(f.net.count(Op::Prepare) == 1 && !f.io.on);
   f.status(0,Phase::Prepared); f.tick(200); CHECK(!f.io.on);
   f.tick(350); CHECK(f.net.count(Op::Start) == 1 && !f.io.on);
-  f.status(0,Phase::Opening,Reason::None,2,400); f.tick(400); CHECK(!f.io.on); f.prove(400); CHECK(f.io.on);
-  f.status(0,Phase::Settling,Reason::Target,3,450); f.tick(450); CHECK(!f.io.on);
-  f.status(0,Phase::Done,Reason::Target,4,950); f.pump.tick(950); f.tick(950);
+  f.status(0,Phase::Opening,Reason::None,2,400); f.prove(400); CHECK(!f.io.on);
+  CHECK(std::string(f.scheduler.guard())=="VALVE_OPEN_WAIT");
+  f.tick(699); CHECK(!f.io.on); f.tick(700); CHECK(f.io.on);
+  f.status(0,Phase::Settling,Reason::Target,3,750); f.tick(750); CHECK(!f.io.on);
+  f.status(0,Phase::Done,Reason::Target,4,1250); f.pump.tick(1250); f.tick(1250);
   CHECK(f.scheduler.report().phase == SchedulePhase::Complete && f.scheduler.report().complete == 1);
+}
+void scheduler_valve_open_lead_and_cancellation() {
+  // Every valve in a concurrent batch gets its own lead time, including the last ACK.
+  {
+    ScheduleFixture f(5); f.scheduler.begin({1,1},31,100,10000,100);
+    for (unsigned i=0;i<5;++i) f.status(i,Phase::Prepared,Reason::None,1,150);
+    f.tick(150);
+    for (unsigned i=0;i<5;++i) {
+      const uint32_t now=200+i*100;
+      f.status(i,Phase::Opening,Reason::None,2,now); f.prove(now);
+      CHECK(!f.io.on && f.io.starts==0);
+    }
+    f.tick(899); CHECK(!f.io.on); f.tick(900);
+    CHECK(f.io.on && f.io.starts==1 && f.scheduler.report().phase==SchedulePhase::Supplying);
+  }
+  // Retransmitted StartOK must not postpone an already accepted opening command.
+  {
+    ScheduleFixture f; f.scheduler.begin({1,1},1,100,10000,100);
+    f.status(0,Phase::Prepared,Reason::None,1,150); f.tick(150);
+    f.status(0,Phase::Opening,Reason::None,2,160); f.prove(160);
+    CHECK(f.scheduler.commandReply(2,{1,1},Op::Start,Reply::Ok,300));
+    CHECK(f.scheduler.node(0).startAckAt==160);
+    f.tick(459); CHECK(!f.io.on); f.tick(460); CHECK(f.io.on);
+  }
+  // Cancellation, residual-pressure target closure and faults during the lead
+  // must all prevent even a momentary pump pulse when the timer expires.
+  for (unsigned outcome=0;outcome<3;++outcome) {
+    ScheduleFixture f; f.scheduler.begin({1,1},1,100,10000,100);
+    f.status(0,Phase::Prepared,Reason::None,1,150); f.tick(150);
+    f.status(0,Phase::Opening,Reason::None,2,160); f.prove(160); CHECK(!f.io.on);
+    if (outcome==0) f.scheduler.stop(Reason::Manual,300);
+    else if (outcome==1) CHECK(f.scheduler.targetClosed(2,{1,1},300));
+    else f.status(0,Phase::Settling,Reason::NoFlow,3,300);
+    f.tick(460); f.tick(1000);
+    CHECK(!f.io.on && f.io.starts==0 && f.scheduler.report().phase==SchedulePhase::Draining);
+  }
+  // The lead does not make an old lease proof fresh. Renewals continue while
+  // waiting for another valve, and a new proof is still required before pumping.
+  {
+    ScheduleFixture f(2); f.scheduler.begin({1,1},3,100,10000,100);
+    f.status(0,Phase::Prepared,Reason::None,1,150);
+    f.status(1,Phase::Prepared,Reason::None,1,150); f.tick(150);
+    f.status(0,Phase::Opening,Reason::None,2,160); f.prove(160);
+    f.status(1,Phase::Opening,Reason::None,2,1960); f.tick(1960);
+    const auto last=f.scheduler.node(1).leases[0];
+    CHECK(last.accepted && f.scheduler.leaseAck(3,{1,1},last.sequence,Reply::Ok,1960));
+    f.tick(2259); CHECK(!f.io.on); f.tick(2260);
+    CHECK(!f.io.on && std::string(f.scheduler.guard())=="LEASE_PROOF_OLD");
+    uint32_t renewed=0;
+    for (const auto &record:f.scheduler.node(0).leases)
+      if (record.accepted && record.issuedAt==1960) renewed=record.sequence;
+    CHECK(renewed && f.scheduler.leaseAck(2,{1,1},renewed,Reply::Ok,2261));
+    f.tick(2261); CHECK(f.io.on);
+  }
+  // A late StartOK cannot extend the fixed bootstrap budget to fit the lead.
+  {
+    ScheduleFixture f; f.scheduler.begin({1,1},1,100,10000,100);
+    f.status(0,Phase::Prepared,Reason::None,1,150); f.tick(150);
+    const auto first=f.scheduler.node(0).firstStartIssuedAt;
+    f.status(0,Phase::Opening,Reason::None,2,first+3800); f.prove(first+3800);
+    f.tick(first+3999); CHECK(!f.io.on); f.tick(first+4000);
+    CHECK(!f.io.on && f.io.starts==0 && std::string(f.scheduler.guard())=="BOOTSTRAP_TIMEOUT");
+  }
 }
 void scheduler_cancel_retries_and_timeout() {
   ScheduleFixture f; f.scheduler.begin({1,1},1,100,10000,100); f.scheduler.stop(Reason::Manual,200);
@@ -178,24 +341,25 @@ void scheduler_manual_calibration_ack_and_terminal_result() {
   f.tick(250);
   f.status(0,Phase::Opening,Reason::None,2,300);
   f.prove(300);
+  CHECK(!f.io.on); f.tick(600);
   CHECK(f.io.on && f.scheduler.report().phase==SchedulePhase::Supplying);
 
-  CHECK(f.scheduler.markCalibration(400)==Reply::Ok);
+  CHECK(f.scheduler.markCalibration(700)==Reply::Ok);
   CHECK(f.net.sent.back().op==Op::MeasureMark && f.net.sent.back().peer==2);
   Reader mark{f.net.sent.back()}; CHECK(mark.key()==JobKey{1,1} && mark.done());
-  CHECK(!f.scheduler.calibrationMarkAck(3,{1,1},100,Reply::Ok,401));
-  CHECK(!f.scheduler.calibrationMarkAck(2,{1,2},100,Reply::Ok,401));
-  CHECK(f.scheduler.calibrationMarkAck(2,{1,1},100,Reply::Ok,401));
-  CHECK(f.scheduler.calibrationMarkAck(2,{1,1},100,Reply::Ok,402));
-  CHECK(!f.scheduler.calibrationMarkAck(2,{1,1},101,Reply::Ok,402));
-  CHECK(f.scheduler.markCalibration(402)==Reply::NotReady);
+  CHECK(!f.scheduler.calibrationMarkAck(3,{1,1},100,Reply::Ok,701));
+  CHECK(!f.scheduler.calibrationMarkAck(2,{1,2},100,Reply::Ok,701));
+  CHECK(f.scheduler.calibrationMarkAck(2,{1,1},100,Reply::Ok,701));
+  CHECK(f.scheduler.calibrationMarkAck(2,{1,1},100,Reply::Ok,702));
+  CHECK(!f.scheduler.calibrationMarkAck(2,{1,1},101,Reply::Ok,702));
+  CHECK(f.scheduler.markCalibration(702)==Reply::NotReady);
 
-  f.scheduler.stop(Reason::Manual,500);
+  f.scheduler.stop(Reason::Manual,800);
   CHECK(!f.io.on && f.scheduler.report().failed==0);
   ValveStatus terminal; terminal.key={1,1}; terminal.k=1000;
   terminal.phase=Phase::Done; terminal.reason=Reason::Manual;
   terminal.quiet=true; terminal.closePulses=2400; terminal.pulses=2415; terminal.revision=3;
-  CHECK(f.scheduler.result(2,terminal,1100));
+  CHECK(f.scheduler.result(2,terminal,1400));
   CHECK(f.scheduler.report().complete==1 && f.scheduler.report().failed==0);
   CHECK(f.scheduler.node(0).status.closePulses-100==2300);
   CHECK(f.scheduler.node(0).status.pulses-f.scheduler.node(0).status.closePulses==15);
@@ -213,10 +377,10 @@ void scheduler_manual_calibration_ack_and_terminal_result() {
 }
 void scheduler_faults_and_ordering() {
   ScheduleFixture f; f.scheduler.begin({1,1},1,100,10000,100);
-  f.status(0,Phase::Prepared); f.tick(200); f.status(0,Phase::Opening,Reason::None,2,250); f.tick(250); f.prove(250); CHECK(f.io.on);
-  f.status(0,Phase::Prepared,Reason::None,1,260); CHECK(f.scheduler.node(0).status.phase == Phase::Opening);
-  f.status(0,Phase::Settling,Reason::NoFlow,3,300); CHECK(!f.io.on && f.net.count(Op::Close) == 1);
-  f.status(0,Phase::Fault,Reason::NoFlow,4,800); f.pump.tick(800); f.tick(800);
+  f.status(0,Phase::Prepared); f.tick(200); f.status(0,Phase::Opening,Reason::None,2,250); f.prove(250); f.tick(550); CHECK(f.io.on);
+  f.status(0,Phase::Prepared,Reason::None,1,560); CHECK(f.scheduler.node(0).status.phase == Phase::Opening);
+  f.status(0,Phase::Settling,Reason::NoFlow,3,600); CHECK(!f.io.on && f.net.count(Op::Close) == 1);
+  f.status(0,Phase::Fault,Reason::NoFlow,4,1100); f.pump.tick(1100); f.tick(1100);
   CHECK(f.scheduler.report().phase == SchedulePhase::Failed);
 }
 void lease_acknowledgements_and_timeout() {
@@ -233,7 +397,8 @@ void lease_acknowledgements_and_timeout() {
   CHECK(!acknowledged.scheduler.leaseAck(2,{1,1},sequence+1,Reply::Ok,450));
   CHECK(acknowledged.scheduler.leaseAck(2,{1,1},sequence,Reply::Ok,450));
   CHECK(!acknowledged.scheduler.leaseAck(2,{1,1},sequence,Reply::Ok,451));
-  acknowledged.tick(450); CHECK(acknowledged.io.on);
+  acknowledged.tick(451); CHECK(!acknowledged.io.on);
+  acknowledged.tick(700); CHECK(acknowledged.io.on);
 
   ScheduleFixture lost; lost.scheduler.begin({1,1},1,100,10000,100);
   lost.status(0,Phase::Prepared); lost.tick(200); lost.tick(350);
@@ -247,18 +412,19 @@ void stale_lease_ack_stops_pump_as_lease_failure() {
   ScheduleFixture f; f.scheduler.begin({1,1},1,100,10000,100);
   f.status(0,Phase::Prepared); f.tick(200); f.tick(350);
   f.status(0,Phase::Opening,Reason::None,2,400); f.prove(400);
+  f.tick(700);
   CHECK(f.io.on && f.scheduler.report().phase == SchedulePhase::Supplying);
 
-  for (uint32_t now = 600; now <= 1200; now += 200) f.tick(now);
-  f.tick(1400);
-  f.scheduler.submissions(1400);
+  for (uint32_t now = 800; now <= 1600; now += 200) f.tick(now);
+  f.tick(1800);
+  f.scheduler.submissions(1800);
   const Packet *renewal = nullptr;
   for (const auto &p : f.net.sent) if (p.op == Op::Lease) renewal = &p;
   CHECK(renewal && f.net.count(Op::Lease) >= 2);
   Reader lease{*renewal};
   CHECK(lease.u32() == 1);
   const uint32_t sequence = lease.u32(); CHECK(lease.done() && sequence != 0);
-  CHECK(f.scheduler.leaseAck(2,{1,1},sequence,Reply::Stale,1450));
+  CHECK(f.scheduler.leaseAck(2,{1,1},sequence,Reply::Stale,1850));
   CHECK(!f.io.on && f.scheduler.report().phase == SchedulePhase::Draining);
   CHECK(f.scheduler.report().reason == Reason::Lease && f.net.fenced == JobKey{1,1});
 }
@@ -283,19 +449,16 @@ void rejected_commands_and_late_terminal_reconciliation() {
   CHECK(restored.scheduler.report().phase == SchedulePhase::Complete);
 }
 void thirty_two_nodes_and_batches() {
-  ScheduleFixture f; CHECK(f.scheduler.check(0xffffffff,100,10000,100) == Reply::Ok);
-  CHECK(f.scheduler.registerNode(32,{99,1000,1}) == Reply::Capacity);
-  CHECK(f.scheduler.registerNode(1,{2,1000,1}) == Reply::Conflict);
-  f.scheduler.begin({1,1},0xffffffff,100,10000,100);
-  uint32_t now = 100;
-  for (size_t i=0;i<32;++i) {
-    f.status(i,Phase::Prepared,Reason::None,1,now); f.tick(now);
-    f.status(i,Phase::Done,Reason::Target,3,now+10); f.tick(now+10); f.tick(now+20);
-    now += 50;
-    if (i < 31) f.tick(now);
-  }
-  CHECK(f.scheduler.report().phase == SchedulePhase::Complete && f.scheduler.report().complete == 0xffffffff);
-  CHECK(f.io.starts == 0); // Already delivered by residual pressure: never start the pump.
+  ScheduleFixture f;
+  CHECK(f.scheduler.check(0xffffffff,100,10000,100)==Reply::Capacity);
+  CHECK(f.scheduler.registerNode(32,{99,1000,1})==Reply::Capacity);
+  CHECK(f.scheduler.registerNode(1,{2,1000,1})==Reply::Conflict);
+  // Deployed slot 32 remains readable; product limits must not erase history.
+  CHECK(f.scheduler.node(31).config.address==33);
+  JobReport report; report.key={1,1}; report.selected=0xffffffff;
+  report.phase=SchedulePhase::Failed; report.unknown=0xffffffff;
+  ValveStatus results[MaxNodes]{}; f.scheduler.restore(report,results);
+  CHECK(f.scheduler.report().unknown==0xffffffff);
 }
 void telemetry_cannot_control_outputs() {
   ScheduleFixture f; f.scheduler.begin({1,1},1,100,10000,100); f.status(0,Phase::Prepared);
@@ -329,13 +492,13 @@ void request_parser_and_replay() {
 void reboot_volume_is_unknown() {
   ScheduleFixture f; f.scheduler.begin({1,1},1,100,10000,100);
   f.status(0,Phase::Prepared,Reason::None,17,150); f.tick(150);
-  f.status(0,Phase::Opening,Reason::None,18,160); f.tick(160); f.prove(160); CHECK(f.io.on);
+  f.status(0,Phase::Opening,Reason::None,18,160); f.prove(160); f.tick(460); CHECK(f.io.on);
   // Remote reboot report, independent of the slave controller implementation.
   ValveStatus reboot; reboot.key = {1,1}; reboot.k = 1000; reboot.revision = 33;
   reboot.phase = Phase::Fault; reboot.reason = Reason::Reboot; reboot.truncated = true;
-  f.scheduler.status(2,reboot,200);
-  f.status(0,Phase::Running,Reason::None,19,201);
-  f.pump.tick(200); f.tick(200);
+  f.scheduler.status(2,reboot,500);
+  f.status(0,Phase::Running,Reason::None,19,501);
+  f.pump.tick(501); f.tick(501);
   CHECK(f.scheduler.report().phase == SchedulePhase::Failed && f.scheduler.report().unknown == 1);
   CHECK(f.scheduler.node(0).status.reason == Reason::Reboot && !f.io.on);
   CHECK(f.scheduler.volume().measured == 0);
@@ -384,20 +547,20 @@ void bounded_pump_test_wrap_and_limits() {
 }
 void pwm_idle_and_bounded_switching() {
   FakePump io; PumpSafetyController c(io,pumpConfig()); c.boot(0);
-  CHECK(!io.on && io.duty == 50 && c.speed() == 1);
+  CHECK(!io.on && io.duty == 65 && c.speed() == 1);
   CHECK(c.setSpeed(2,0) == Reply::Ok && !io.on && c.fault() == PumpFault::None);
   CHECK(c.reset(0) == Reply::Ok);
   CHECK(c.setSpeed(0,1) == Reply::Invalid && c.setSpeed(4,1) == Reply::Invalid);
-  CHECK(c.setSpeed(2,1) == Reply::Ok && io.duty == 75 && !io.on && io.starts == 0);
+  CHECK(c.setSpeed(2,1) == Reply::Ok && io.duty == 80 && !io.on && io.starts == 0);
   CHECK(c.startTest({1,1},1,3000,50) == Reply::Ok && io.on);
   CHECK(c.setSpeed(3,1500) == Reply::Ok && io.duty == 100 && io.starts == 1);
   CHECK(c.testRemaining(1500) == 1550);
-  CHECK(c.setSpeed(1,3000) == Reply::Ok && io.duty == 50 && io.starts == 1);
+  CHECK(c.setSpeed(1,3000) == Reply::Ok && io.duty == 65 && io.starts == 1);
   c.tick(3050); CHECK(!io.on && !c.testing() && c.speed() == 1);
   CHECK(c.setSpeed(2,3051) == Reply::Ok && !io.on);
-  CHECK(c.startTest({1,2},1,3000,3100) == Reply::Ok && io.duty == 75);
+  CHECK(c.startTest({1,2},1,3000,3100) == Reply::Ok && io.duty == 80);
   c.stop(3150); CHECK(!io.on && c.speed() == 2);
-  c.boot(3200); CHECK(!io.on && c.speed() == 1 && io.duty == 50);
+  c.boot(3200); CHECK(!io.on && c.speed() == 1 && io.duty == 65);
 }
 void pwm_failure_and_authorization() {
   FakePump io; PumpSafetyController c(io,pumpConfig()); c.boot(0); CHECK(c.reset(0) == Reply::Ok);
@@ -422,8 +585,8 @@ void phone_test_does_not_relock_dosing() {
   CHECK(c.setSpeed(3,0) == Reply::Ok && !io.on);
   CHECK(c.startTest({7,1},1,3001,50,true) == Reply::Invalid);
   CHECK(c.startTest({7,1},1,3000,50,true) == Reply::Ok && c.dryTesting());
-  CHECK(io.on && io.duty == 50 && c.speed() == 1);
-  CHECK(c.setSpeed(3,500) == Reply::Busy && io.duty == 50);
+  CHECK(io.on && io.duty == 65 && c.speed() == 1);
+  CHECK(c.setSpeed(3,500) == Reply::Busy && io.duty == 65);
   CHECK(c.setSpeed(1,1000) == Reply::Ok && c.testRemaining(1000) == 2050);
   CHECK(c.renew({7,1},2,1000) == Reply::Stale);
   c.tick(3049); CHECK(io.on); c.tick(3050);
@@ -432,7 +595,7 @@ void phone_test_does_not_relock_dosing() {
   CHECK(c.start({7,2},1,3100) == Reply::Ok);
   c.stop(3150);
   CHECK(c.setSpeed(2,3150) == Reply::Ok);
-  CHECK(c.startTest({7,2},1,3000,3200) == Reply::Ok && io.duty == 75);
+  CHECK(c.startTest({7,2},1,3000,3200) == Reply::Ok && io.duty == 80);
   c.stop(3300); CHECK(!io.on && c.fault() == PumpFault::None);
   CHECK(c.start({7,3},1,3350) == Reply::Ok);
   c.stop(3400);
@@ -506,7 +669,7 @@ void individual_request_and_durable_replay() {
   CHECK(replayDecision(record,changed,q.amounts) == Reply::Stale);
 }
 void individual_scheduler_prepares_each_slot_and_retains_global_limit() {
-  ScheduleFixture f;
+  ScheduleFixture f(2);
   uint8_t plan[MaxNodes] = {}; plan[0] = 6; plan[31] = 40;
   CHECK(f.scheduler.check(0x80000001,0,60000,100,plan) == Reply::Ok);
   CHECK(f.scheduler.check(1,0,60000,100,plan) == Reply::Invalid);
@@ -514,19 +677,21 @@ void individual_scheduler_prepares_each_slot_and_retains_global_limit() {
   CHECK(f.scheduler.check(0x80000001,0,240001,100,plan) == Reply::Invalid);
   f.scheduler.begin({1,1},0x80000001,0,60000,100,plan);
   f.tick(150);
-  auto p = f.net.sent.back(); Reader first{p}; CHECK(p.op == Op::Prepare && p.peer == 2);
+  Packet p;
+  for (const auto &sent:f.net.sent) if (sent.op==Op::Prepare && sent.peer==2) p=sent;
+  Reader first{p}; CHECK(p.op == Op::Prepare && p.peer == 2);
   CHECK(first.key() == JobKey{1,1}); CHECK(first.u32() == 300 && first.u32() == 300);
   CHECK(first.u32() == 1000 && first.u32() == 1 && first.u32() == 60000);
   CHECK(first.u16() == SpeedLowPermille && first.u32() == LeaseMs && first.u8() == PrepareLiveTelemetry && first.u32() == 1 && first.done());
-  f.status(0,Phase::Prepared,Reason::None,1,200); f.tick(200);
-  f.status(0,Phase::Done,Reason::Target,3,210); f.tick(210); f.tick(220);
-  f.tick(260); f.tick(310);
-  p = f.net.sent.back(); Reader second{p}; CHECK(p.op == Op::Prepare && p.peer == 33);
+  for (const auto &sent:f.net.sent) if (sent.op==Op::Prepare && sent.peer==33) p=sent;
+  Reader second{p}; CHECK(p.op == Op::Prepare && p.peer == 33);
   CHECK(second.key() == JobKey{1,1}); CHECK(second.u32() == 2000 && second.u32() == 2000);
   CHECK(second.u32() == 1000 && second.u32() == 1 && second.u32() == 60000);
   CHECK(second.u16() == SpeedLowPermille && second.u32() == LeaseMs && second.u8() == PrepareLiveTelemetry && second.u32() == 1 && second.done());
-  // The complete plan is already resident in the master; no second phone command is required.
+  // Legacy per-slot plans remain readable, but are never silently split into batches.
+  f.status(0,Phase::Prepared,Reason::None,1,350);
   f.status(31,Phase::Prepared,Reason::None,1,350); f.tick(350);
+  f.status(0,Phase::Done,Reason::Target,3,360);
   f.status(31,Phase::Done,Reason::Target,3,360); f.tick(360); f.tick(370);
   CHECK(f.scheduler.report().phase == SchedulePhase::Complete && f.scheduler.report().complete == 0x80000001);
   CHECK(!f.io.on && f.io.starts == 0);
@@ -573,9 +738,9 @@ void lease_proof_age_and_boundary_matrix() {
   }
   ScheduleFixture f(1,20000); f.scheduler.begin({1,1},1,100,10000,100);
   f.status(0,Phase::Prepared,Reason::None,1,150); f.tick(150);
-  f.status(0,Phase::Opening,Reason::None,2,160); f.prove(160); CHECK(f.io.on);
+  f.status(0,Phase::Opening,Reason::None,2,160); f.prove(160); f.tick(460); CHECK(f.io.on);
   const auto issued=f.scheduler.node(0).leaseAckAt;
-  for(uint32_t t=issued+200;t<issued+8000;t+=200){f.pump.tick(t);f.tick(t);CHECK(f.io.on);}
+  for(uint32_t t=issued+400;t<issued+8000;t+=200){f.pump.tick(t);f.tick(t);CHECK(f.io.on);}
   f.tick(issued+7999);CHECK(f.io.on);f.tick(issued+8000);
   CHECK(!f.io.on && f.scheduler.report().reason==Reason::Lease && f.net.fenced==JobKey{1,1});
 }
@@ -594,6 +759,7 @@ void early_ack_commit_and_rejection_matrix() {
     CHECK(!f.scheduler.node(0).leaseAckSeen);
     auto result=accepted;result.error=reject?-12:0;f.net.pending.push_back(result);
     f.scheduler.submissions(180);f.scheduler.tick(180);
+    CHECK(!f.io.on); f.tick(460);
     CHECK(f.io.on==!reject);
     if(reject)CHECK(f.scheduler.report().reason==Reason::Transport);
     else CHECK(f.scheduler.node(0).leaseAckAt==160);
@@ -682,22 +848,23 @@ void capability_cache_build_identity_and_restart() {
   CHECK(restartedMaster.net.count(Op::CapabilitiesGet)==1);
 }
 void lease_cross_round_and_timer_wrap() {
-  const uint32_t start=UINT32_MAX-400;
+  const uint32_t start=UINT32_MAX-200;
   ScheduleFixture f(1,20000); f.scheduler.hello(2,1000,1,true,start,TestSlaveBuildId);
   f.scheduler.begin({1,1},1,100,10000,start);
   f.tick(start+50); f.status(0,Phase::Prepared,Reason::None,1,start+50); f.tick(start+50);
-  f.status(0,Phase::Opening,Reason::None,2,start+60); f.prove(start+60); CHECK(f.io.on);
+  f.status(0,Phase::Opening,Reason::None,2,start+60); f.prove(start+60); CHECK(!f.io.on);
+  f.tick(start+359); CHECK(!f.io.on); f.tick(start+360); CHECK(f.io.on);
   const auto issued=f.scheduler.node(0).leaseAckAt;
-  for (uint32_t delta=200;delta<=2000;delta+=200) { f.pump.tick(issued+delta); f.tick(issued+delta); CHECK(f.io.on); }
+  for (uint32_t delta=400;delta<=2000;delta+=200) { f.pump.tick(issued+delta); f.tick(issued+delta); CHECK(f.io.on); }
   const auto &n=f.scheduler.node(0);
   uint32_t previousSequence=0;
-  for (const auto &v:n.leases) if (v.issuedAt==issued+1000) previousSequence=v.sequence;
+  for (const auto &v:n.leases) if (v.issuedAt==issued+1400) previousSequence=v.sequence;
   CHECK(previousSequence!=0); // A newer round has been committed, but this proof is still valid.
   CHECK(f.scheduler.leaseAck(2,{1,1},previousSequence,Reply::Ok,issued+2050));
-  CHECK(f.scheduler.node(0).leaseAckAt==issued+1000);
+  CHECK(f.scheduler.node(0).leaseAckAt==issued+1400);
   CHECK(!f.scheduler.leaseAck(2,{1,1},previousSequence,Reply::Ok,issued+2100));
-  for (uint32_t delta=2200;delta<9000;delta+=200) { f.pump.tick(issued+delta); f.tick(issued+delta); CHECK(f.io.on); }
-  f.tick(issued+8999); CHECK(f.io.on); f.tick(issued+9000);
+  for (uint32_t delta=2200;delta<9400;delta+=200) { f.pump.tick(issued+delta); f.tick(issued+delta); CHECK(f.io.on); }
+  f.tick(issued+9399); CHECK(f.io.on); f.tick(issued+9400);
   CHECK(!f.io.on && f.scheduler.report().reason==Reason::Lease);
 }
 void stop_reason_migration_and_late_target() {
@@ -729,7 +896,7 @@ void v4_exact_boundaries_and_ledger() {
     f.scheduler.submissions(170);
     CHECK(f.scheduler.node(0).startAckSeen==!reject && !f.io.on);
     if(reject)CHECK(std::string(f.scheduler.guard())=="TX_ERROR");
-    else {f.prove(180);CHECK(f.io.on);}
+    else {f.prove(180);CHECK(!f.io.on);f.tick(469);CHECK(!f.io.on);f.tick(470);CHECK(f.io.on);}
   }
   // Nonconsecutive registry slots still occupy distinct renewal phases.
   {ScheduleFixture f(5);constexpr uint32_t mask=0x00108421;
@@ -737,8 +904,9 @@ void v4_exact_boundaries_and_ledger() {
     for(unsigned i=0;i<5;++i)f.status(i*5,Phase::Prepared,Reason::None,1,150);
     f.tick(150);
     for(unsigned i=0;i<5;++i)f.status(i*5,Phase::Opening,Reason::None,2,160);
-    f.prove(160);CHECK(f.io.on);
-    for(unsigned i=0;i<5;++i)CHECK(f.scheduler.node(i*5).nextLeaseAt==1160+i*200);
+    f.prove(160);CHECK(!f.io.on);f.tick(460);CHECK(f.io.on);
+    const uint32_t nextLeaseAt[]={1460,1660,1860,2060,1260};
+    for(unsigned i=0;i<5;++i)CHECK(f.scheduler.node(i*5).nextLeaseAt==nextLeaseAt[i]);
   }
   // Same-clock field replay: total startup 2680ms, first lease proof age 1283ms.
   {ScheduleFixture f;f.scheduler.begin({1,1},1,100,10000,100);
@@ -878,6 +1046,9 @@ void removed_result_addresses_survive_restart_and_slot_reuse() {
   saved.nodes[0] = 2; saved.magic = 0; CHECK(!decodeResultAddresses(&saved, sizeof(saved), restored));
 }
 int main() {
+  result_commit_and_reconciliation();
+  maintenance_tokens_and_deadlines();
+  mesh_config_retry_policy();
   single_slave_removal_waits_for_exact_events_and_durable_cleanup();
   unregister_only_the_selected_slave_and_keep_other_nodes();
   removed_result_addresses_survive_restart_and_slot_reuse();
@@ -890,9 +1061,10 @@ int main() {
     {"output-only pump and commissioning",pump_output_only_and_commissioning}, {"pump authorization and replay",pump_authorization_and_replay},
     {"pump stop cooldown and timer wrap",pump_stop_cooldown_and_wrap}, {"pump runtime and fault reset",pump_runtime_and_fault_reset},
     {"scheduler valve before pump",scheduler_order_and_completion}, {"cancel retries and bounded timeout",scheduler_cancel_retries_and_timeout},
+    {"valve lead, staggered batch, duplicate ACK, cancellation and fresh proof",scheduler_valve_open_lead_and_cancellation},
     {"manual calibration stop during startup",scheduler_calibration_can_stop_before_open_ack},
     {"manual calibration capability, mark ACK and terminal result",scheduler_manual_calibration_ack_and_terminal_result},
-    {"scheduler faults and message ordering",scheduler_faults_and_ordering}, {"32 logical nodes and sequential batches",thirty_two_nodes_and_batches},
+    {"scheduler faults and message ordering",scheduler_faults_and_ordering}, {"32-slot history preserved, sixth-node run rejected",thirty_two_nodes_and_batches},
     {"lease acknowledgement and timeout",lease_acknowledgements_and_timeout},
     {"stale lease acknowledgement stops pump as lease failure",stale_lease_ack_stops_pump_as_lease_failure},
     {"command rejection and reboot reconciliation",rejected_commands_and_late_terminal_reconciliation},

@@ -12,7 +12,7 @@ compiler = args.compiler or next((p for name in ("zig", "clang++", "g++") if (p 
 if not compiler:
     parser.error("Pass --compiler with a C++17 compiler or Zig executable")
 root = Path(__file__).resolve().parents[1]
-for name in ("protocol.h", "mesh_tx_governor.h", "mesh_tx_diagnostics.h"):
+for name in ("protocol.h", "mesh_tx_governor.h", "mesh_tx_diagnostics.h", "maintenance_session.h", "result_commit.h"):
     if (root / "include" / name).read_bytes() != (root.parent / "pump-muti-slave/include" / name).read_bytes():
         raise RuntimeError("Master/slave shared header differs: " + name)
 out = root / ".pio" / "host-tests"

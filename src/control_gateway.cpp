@@ -3,8 +3,8 @@
 #include "esp_gatts_api.h"
 #include "esp_log.h"
 #include "esp_ble_mesh_ble_api.h"
-#include "driver/uart.h"
-#include "driver/uart_vfs.h"
+#include "driver/usb_serial_jtag.h"
+#include "driver/usb_serial_jtag_vfs.h"
 #include "freertos/task.h"
 #include <cstdio>
 #include <cstring>
@@ -18,6 +18,9 @@ esp_gatt_if_t interface = ESP_GATT_IF_NONE;
 uint16_t handles[6] = {}, connection = 0, mtu = 23;
 uint8_t remote[6] = {};
 std::atomic<bool> connected{false}, secure{false}, subscribed{false}, advertising{false}, pendingAdv{false};
+#if defined(PUMP_DISCOVERY_TRACE)
+std::atomic<bool> diagnosticAdvertisingPaused{false};
+#endif
 std::atomic<TaskHandle_t> bluetoothTask{nullptr};
 uint8_t advIndex = 0;
 portMUX_TYPE textMux = portMUX_INITIALIZER_UNLOCKED;
@@ -37,6 +40,9 @@ void attr(size_t i, uint16_t uuidLen, uint8_t *uuid, uint16_t permission,
   a.max_length = maximum; a.length = length; a.value = value;
 }
 void startAdvertising() {
+#if defined(PUMP_DISCOVERY_TRACE)
+  if (diagnosticAdvertisingPaused) return;
+#endif
   if (!pinCode || connected || advertising || pendingAdv.exchange(true)) return;
   esp_ble_mesh_ble_adv_param_t params{};
   params.interval = 0xA0; params.adv_type = ADV_TYPE_IND; params.own_addr_type = BLE_ADDR_TYPE_PUBLIC;
@@ -69,7 +75,11 @@ void meshBleCb(esp_ble_mesh_ble_cb_event_t event, esp_ble_mesh_ble_cb_param_t *p
       ESP_LOGE("gateway", "BLE advertising rejected: index=%u err_code=%d",
         unsigned(advIndex), p->start_ble_advertising_comp.err_code);
     }
-    if (connected && advertising) esp_ble_mesh_stop_ble_advertising(advIndex);
+    if (advertising && (connected
+#if defined(PUMP_DISCOVERY_TRACE)
+        || diagnosticAdvertisingPaused
+#endif
+        )) esp_ble_mesh_stop_ble_advertising(advIndex);
   } else if (event == ESP_BLE_MESH_STOP_BLE_ADVERTISING_COMP_EVT) {
     advertising = false;
     ESP_LOGI("gateway", "BLE advertising stopped: index=%u err_code=%d",
@@ -216,24 +226,12 @@ bool ControlGateway::init(uint32_t passkey, const char *name) {
   commands_ = xQueueCreate(12, sizeof(CommandLine)); output_ = xQueueCreate(32, 192);
   liveOutput_ = xQueueCreate(5, 192);
   if (!commands_ || !output_ || !liveOutput_) return false;
-  if (uart_driver_install(UART_NUM_0, 1024, 2048, 0, nullptr, 0) != ESP_OK) return false;
-  uart_config_t uart{};
-  uart.baud_rate = 115200;
-  uart.data_bits = UART_DATA_8_BITS;
-  uart.parity = UART_PARITY_DISABLE;
-  uart.stop_bits = UART_STOP_BITS_1;
-  uart.flow_ctrl = UART_HW_FLOWCTRL_DISABLE;
-  uart.source_clk = UART_SCLK_DEFAULT;
-  // Drain startup logs before reconfiguring the UART and resetting its FIFOs.
-  if (uart_wait_tx_done(UART_NUM_0, pdMS_TO_TICKS(100)) != ESP_OK ||
-      uart_param_config(UART_NUM_0, &uart) != ESP_OK) {
-    uart_driver_delete(UART_NUM_0);
-    return false;
-  }
-  // ESP_LOG and maintenance replies must share the interrupt-driven TX path.
-  // The default VFS writer polls the FIFO directly and can interleave with
-  // uart_write_bytes(), delaying control and corrupting diagnostic lines.
-  uart_vfs_dev_use_driver(UART_NUM_0);
+  usb_serial_jtag_driver_config_t usb{};
+  usb.tx_buffer_size = 2048;
+  usb.rx_buffer_size = 1024;
+  if (usb_serial_jtag_driver_install(&usb) != ESP_OK) return false;
+  // Logs and maintenance replies share the buffered native USB driver.
+  usb_serial_jtag_vfs_use_driver();
   if (!pinCode) {
     // Keep USB maintenance available, but never expose an unauthenticated
     // business service when the device has not been commissioned with a PIN.
@@ -289,6 +287,19 @@ bool ControlGateway::submit(const char *text, size_t length, bool bluetooth) {
   return true;
 }
 bool ControlGateway::receive(CommandLine &cmd) { return xQueueReceive(commands_, &cmd, 0) == pdTRUE; }
+#if defined(PUMP_DISCOVERY_TRACE)
+bool ControlGateway::setDiagnosticAdvertising(bool enabled) {
+  if (connected) return false;
+  diagnosticAdvertisingPaused = !enabled;
+  if (enabled) startAdvertising();
+  else if (advertising && esp_ble_mesh_stop_ble_advertising(advIndex) != ESP_OK) {
+    diagnosticAdvertisingPaused = false;
+    return false;
+  }
+  ESP_LOGI("gateway", "discovery diagnostic: phone advertising requested=%u", unsigned(enabled));
+  return true;
+}
+#endif
 uint32_t ControlGateway::bluetoothStackMinimumBytes() const {
   const auto task = bluetoothTask.load();
   return task ? uxTaskGetStackHighWaterMark(task) : 0;
@@ -306,7 +317,7 @@ bool ControlGateway::publishLive(const char *text) {
 void ControlGateway::ioWorker() {
   char input[160] = {}; size_t used = 0; bool discarding = false;
   for (;;) {
-    uint8_t bytes[32]; const int n = uart_read_bytes(UART_NUM_0, bytes, sizeof(bytes), pdMS_TO_TICKS(5));
+    uint8_t bytes[32]; const int n = usb_serial_jtag_read_bytes(bytes, sizeof(bytes), pdMS_TO_TICKS(5));
     for (int i = 0; i < n; ++i) {
       const char c = char(bytes[i]);
       if (c == '\r' || c == '\n') {
@@ -317,11 +328,8 @@ void ControlGateway::ioWorker() {
     }
     char out[192];
     if (xQueueReceive(output_, out, 0) == pdTRUE || xQueueReceive(liveOutput_, out, 0) == pdTRUE) {
-      // Use the same FILE lock as ESP_LOG's vprintf for complete reply lines.
-      flockfile(stdout);
-      fwrite(out, 1, strlen(out), stdout);
-      fflush(stdout);
-      funlockfile(stdout);
+      // An unplugged USB cable must not hold up phone notifications.
+      usb_serial_jtag_write_bytes(out, strlen(out), pdMS_TO_TICKS(5));
       portENTER_CRITICAL(&textMux); memcpy(latest, out, sizeof(latest)); portEXIT_CRITICAL(&textMux);
       if (connected && secure && subscribed) {
         const size_t len = strlen(out), chunk = std::min<size_t>(mtu - 3, 180);

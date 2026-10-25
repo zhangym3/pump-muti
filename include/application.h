@@ -30,6 +30,12 @@ class Application {
   void flowCalibrationStatus(Reply reply = Reply::Ok, uint64_t client = 0, uint32_t request = 0);
   void pumpTestReply(const ControlRequest &q, Reply result, uint32_t now);
   bool idle() const;
+  bool resultsSettled() const;
+  bool commitReport(uint32_t now);
+  void modeTick(uint32_t now);
+  bool beginMode(uint8_t kind,uint16_t address,uint32_t now);
+  void maintenanceState();
+  uint32_t registeredMask() const;
   bool flowCalibrationLocked() const;
   void meshState(uint32_t request);
   void beginInventory(uint32_t request, uint32_t now);
@@ -49,6 +55,16 @@ class Application {
   MasterScheduler &scheduler_;
   uint32_t lastRequestAt_ = 0;
   bool storageHealthy_ = true, savedJob_ = true;
+  struct ModeOperation {
+    uint8_t kind=0,cursor=0;
+    uint16_t address=0,ingress=0;
+    JobKey token;
+    uint32_t expected=0,received=0,began=0,sentAt=0;
+    uint32_t boot[MaxNodes]={};
+    ControlRequest request;
+  } mode_;
+  uint32_t modeSequence_=0;
+  bool modeApproved_=false;
   char pendingResponse_[2][192] = {};
   bool responseLinePending_[2] = {};
   JobKey flowReplayKey_, resultQueryKey_;

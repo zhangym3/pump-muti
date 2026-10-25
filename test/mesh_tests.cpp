@@ -2,6 +2,7 @@
 #include "flow_job_controller.h"
 #include "valve_mesh_session.h"
 #include "mesh_tx_diagnostics.h"
+#include "mesh_discovery_cache.h"
 #include <cstdio>
 #include <cstdlib>
 #include <array>
@@ -235,6 +236,7 @@ struct Bench {
   static constexpr uint32_t SlowSarMs=3200;
   int slow=-1; uint32_t sarMs=65, ackDelay=0;
   uint32_t startReplyDelay=0, acceptedDelay=0, prepareLife=0, jitter=0, pulsesPerTick=3;
+  std::array<uint32_t,5> pulseRates{};
   bool rejectStart=false, rejectLease=false, randomLoss=false, dropClosed=false,dropClosedAck=false;
   uint16_t supportedFeatures=RequiredFeatures;
   unsigned preparations=0,leaseApplied=0,lossCount=0,lossBudget=1; uint32_t oldestApplied=0;
@@ -307,7 +309,7 @@ struct Bench {
   void step(){
     now+=5;link.now=now;pump.tick(now);scheduler.submissions(now);
     for(unsigned i=0;i<count;++i){
-      auto &s=*slaves[i]; if(io.on && s.io.on){s.io.reading.pulses+=pulsesPerTick;s.io.reading.lastMs=now;}
+      auto &s=*slaves[i]; if(io.on && s.io.on){s.io.reading.pulses+=pulseRates[i]?pulseRates[i]:pulsesPerTick;s.io.reading.lastMs=now;}
       s.valve.tick(now);
       if(!s.valve.status().valveCommand)s.tx.retire(1,s.valve.status().key,Op::Progress);
       s.session.poll(1,i,now,[&](const Packet &p){return s.tx.enqueue(p,now);});drain(s.tx,now);
@@ -335,13 +337,13 @@ struct Bench {
       pumpStartedAt=now; CHECK(firstStart && now-firstStart<4000);
       for(unsigned i=0;i<count;++i) {
         const auto &n=scheduler.node(i); const auto v=slaves[i]->valve.status();
-        if(v.valveCommand) CHECK(n.startIssued && n.startAckSeen && n.leaseAckSeen && now-n.leaseAckAt<2000);
+        if(v.valveCommand) CHECK(n.startIssued && n.startAckSeen && n.leaseAckSeen && now-n.leaseAckAt<2000 && elapsed(now,n.startAckAt,ValveOpenLeadMs));
       }
     }
     dispatch(link.tx,-1);
     for(unsigned i=0;i<count;++i)dispatch(slaves[i]->tx,int(i));
   }
-  void begin(uint32_t id){lossCount=0;lost.fill(false);firstStart=pumpStartedAt=0;for(auto &t:lastLease)t=0;link.now=now;CHECK(scheduler.check((1U<<count)-1,500,60000,now)==Reply::Ok);scheduler.begin({1,id},(1U<<count)-1,500,60000,now);}
+  void begin(uint32_t id,uint32_t mask=0){if(!mask)mask=(1U<<count)-1;lossCount=0;lost.fill(false);firstStart=pumpStartedAt=0;for(auto &t:lastLease)t=0;link.now=now;CHECK(scheduler.check(mask,500,60000,now)==Reply::Ok);scheduler.begin({1,id},mask,500,60000,now);}
   void run(uint32_t duration){const auto end=now+duration;while(int32_t(end-now)>0)step();}
   void finish(){const auto start=now;while(scheduler.active() && !elapsed(now,start,40000))step();CHECK(!scheduler.active() && !io.on);run(1000);}
   void clean(){
@@ -355,6 +357,41 @@ struct Bench {
     CHECK(link.tx.healthy());for(unsigned i=0;i<count;++i)CHECK(slaves[i]->tx.healthy());
   }
 };
+void all_five_node_masks() {
+  for(uint32_t mask=1;mask<32;++mask) {
+    Bench b(5); b.duplicate=true; b.dropResultAck=true;
+    b.pulseRates={3,4,5,6,7}; b.begin(1,mask);
+    bool partialCompletion=false;
+    const auto began=b.now;
+    while(b.scheduler.active() && !elapsed(b.now,began,40000)) {
+      b.step(); unsigned closed=0,open=0;
+      for(unsigned i=0;i<5;++i) {
+        if(!(mask&(1U<<i))) { CHECK(!b.slaves[i]->io.on && b.slaves[i]->io.opens==0); continue; }
+        if(b.slaves[i]->io.on) ++open;
+        else if(b.slaves[i]->io.opens) ++closed;
+      }
+      if(open && closed && b.scheduler.report().phase==SchedulePhase::Supplying) {
+        CHECK(b.io.on); partialCompletion=true;
+      }
+    }
+    CHECK(!b.scheduler.active() && !b.io.on);
+    CHECK(b.scheduler.report().phase==SchedulePhase::Complete && b.scheduler.report().complete==mask);
+    CHECK(nodeCount(mask)==1 || partialCompletion);
+    for(unsigned i=0;i<5;++i) if(mask&(1U<<i)) {
+      const auto s=b.slaves[i]->valve.status();
+      CHECK(s.reason==Reason::Target && s.quiet && s.pulses>=2940 && b.slaves[i]->io.opens==1);
+    }
+    // Every selected combination also gets a cancellation during actual supply.
+    Bench stopped(5); stopped.begin(1,mask);
+    const auto start=stopped.now;
+    while(!stopped.io.on && !elapsed(stopped.now,start,10000)) stopped.step();
+    CHECK(stopped.io.on); stopped.scheduler.stop(Reason::Manual,stopped.now);
+    CHECK(!stopped.io.on); stopped.finish();
+    CHECK(stopped.scheduler.report().phase==SchedulePhase::Failed);
+    for(unsigned i=0;i<5;++i) CHECK(!stopped.slaves[i]->io.on);
+  }
+  std::puts("PASS all 31 five-node masks: concurrent independent cutoff, unselected outputs off, duplicate/lost ACK and pump-first cancellation");
+}
 void joint_runs(){
   for(unsigned n:{1U,2U,5U}){
     Bench b(n);
@@ -474,4 +511,38 @@ void calibrated_link_runs() {
   CHECK(legacy.scheduler.stopReason()==Reason::Protocol && !legacy.pumpStartedAt && !legacy.preparations);
   std::puts("PASS calibrated three speeds x five nodes, final K snapshot, duplicate/drop ACK and old slave rejected before PREPARE");
 }
-int main(){progress_governor();live_link_runs();calibrated_link_runs();v4_matrix();governor_matrix();governor_recovery_matrix();recovery_link_runs();joint_runs();return 0;}
+void discovery_cache_runs() {
+  MeshDiscoveryCache cache;
+  MeshCandidate a{}, out[8]{}; a.uuid[0]=1; a.addr[0]=5;
+  // A beacon received between searches must survive the next search. Reading
+  // the cache must not keep an absent device alive past its last observation.
+  cache.observe(a, 100);
+  CHECK(cache.copyFresh(out, 8, 10100)==1 && out[0].uuid[0]==1);
+  CHECK(cache.copyFresh(out, 8, 30099)==1);
+  CHECK(cache.copyFresh(out, 8, 30100)==0);
+  cache.observe(a, 40000);
+  a.addr[0]=9; a.type=1; a.oob=0x1234;
+  cache.observe(a, 50000);
+  CHECK(cache.copyFresh(out, 8, 70000)==1 && out[0].addr[0]==9 && out[0].type==1 && out[0].oob==0x1234);
+  cache.forget(a.uuid);
+  CHECK(cache.copyFresh(out, 8, 70000)==0);
+  // The oldest UUID is evicted on overflow; refreshing an existing UUID makes
+  // it recent without consuming another slot.
+  for (uint8_t id=1; id<=8; ++id) { a.uuid[0]=id; cache.observe(a, 100000+id); }
+  a.uuid[0]=1; cache.observe(a, 100009);
+  a.uuid[0]=9; cache.observe(a, 100010);
+  CHECK(cache.copyFresh(out, 8, 100011)==8);
+  bool first=false, second=false, ninth=false;
+  for (const auto &c:out) { first |= c.uuid[0]==1; second |= c.uuid[0]==2; ninth |= c.uuid[0]==9; }
+  CHECK(first && !second && ninth);
+  out[1].uuid[0]=99;
+  CHECK(cache.copyFresh(out, 1, 100012)==1 && out[1].uuid[0]==99);
+  cache.clear(); CHECK(cache.copyFresh(out, 8, 100013)==0);
+  // millis() wraps on the device; both freshness and exact expiry must work.
+  cache.observe(a, UINT32_MAX-999);
+  CHECK(cache.copyFresh(out, 8, 1000)==1);
+  CHECK(cache.copyFresh(out, 8, 28999)==1);
+  CHECK(cache.copyFresh(out, 8, 29000)==0);
+  std::puts("PASS discovery between searches, TTL, fresh address, bounded eviction, invalidation and clock wrap");
+}
+int main(){all_five_node_masks();discovery_cache_runs();progress_governor();live_link_runs();calibrated_link_runs();v4_matrix();governor_matrix();governor_recovery_matrix();recovery_link_runs();joint_runs();return 0;}

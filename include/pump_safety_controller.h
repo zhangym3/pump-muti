@@ -10,7 +10,7 @@ struct PumpConfig {
   // Command timing only: the output-only master has no pump/sensor feedback.
   uint32_t maxRunMs = 240000, minOffMs = 1000;
   uint32_t authorizationMs = 1000;
-  uint8_t lowDuty = 50, mediumDuty = 75, highDuty = 100;
+  uint8_t lowDuty = 65, mediumDuty = 80, highDuty = 100;
   bool valid() const;
 };
 class PumpIO {

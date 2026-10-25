@@ -6,15 +6,16 @@ from pathlib import Path
 import shutil
 
 ROLE = 'pump_master'
-BOARD = 'esp32-s3-devkitc-1'
-CHIP = 'esp32s3'
+BOARD = 'esp32-c3-devkitm-1'
+CHIP = 'esp32c3'
 BOOT_OFFSET = '0x0'
 root = Path(__file__).resolve().parents[1]
 dist = root / "dist"
 build = root / ".pio" / "build" / ROLE
 images = {"bootloader.bin": BOOT_OFFSET, "partitions.bin": "0x8000", "firmware.bin": "0x20000"}
 sources = sorted([p for folder in ("src", "include") for p in (root / folder).glob("*") if p.is_file()] +
-                 [p for p in root.glob("sdkconfig*") if p.is_file() and not p.name.endswith(".old")] +
+                 # Only this environment's effective config affects its images.
+                 [root / ("sdkconfig." + ROLE)] + sorted(root.glob("sdkconfig*defaults")) +
                  [root / n for n in ("platformio.ini", "partitions.csv", "CMakeLists.txt", "tools/package_firmware.py")])
 for name in images:
     if not (build / name).is_file():
@@ -27,7 +28,7 @@ config = (build / "config" / "sdkconfig.h").read_text()
 if f'#define CONFIG_IDF_TARGET "{CHIP}"' not in config:
     raise SystemExit("Build target does not match this project")
 manifest = {"createdUtc": datetime.now(timezone.utc).isoformat(), "role": ROLE, "chip": CHIP,
-            "board": BOARD, "module": "ESP32-S3-WROOM-1-N16R8", "flash": "16MB",
+            "board": BOARD, "module": "ESP32-C3 Super Mini", "flash": "4MB",
             "pumpPwmGpio": 4, "psramEnabled": False, "hardwareValidated": False,
             "note": "Application offset 0x20000. Preserve NVS. Match chip and role before flashing.",
             "files": [], "sources": {}}

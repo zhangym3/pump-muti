@@ -1,6 +1,7 @@
 #include "application.h"
 #include "mesh_tx_diagnostics.h"
 #include "hardware.h"
+#include "result_commit.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_system.h"
@@ -20,7 +21,105 @@ bool decodeResult(const Packet &p, ValveStatus &s) {
 }
 }
 bool Application::idle() const {
-  return !scheduler_.active() && !pump_.output() && !store_.removingAddress() && !flowCalibrationLocked();
+  return storageHealthy_ && resultsSettled() && !store_.maintenance().locked && !mode_.kind && !scheduler_.active() && !pump_.output() && !store_.removingAddress() && !flowCalibrationLocked();
+}
+uint32_t Application::registeredMask() const {
+  uint32_t mask=0;
+  for (size_t i=0;i<MaxNodes;++i) if (store_.state().nodes[i].address) mask|=uint32_t(1)<<i;
+  return mask;
+}
+void Application::maintenanceState() {
+  const auto &m=store_.maintenance(); char line[160];
+  snprintf(line,sizeof(line),"MAINT locked=%u addr=%04x token=%lu:%lu boot=%lu pending=%u",
+    m.locked,m.address,(unsigned long)m.epoch,(unsigned long)m.generation,(unsigned long)m.boot,mode_.kind);
+  gateway_.publish(line);
+}
+bool Application::beginMode(uint8_t kind,uint16_t address,uint32_t now) {
+  if (mode_.kind || !storageHealthy_ || !mesh_.healthy() || !mesh_.ready() || scheduler_.active() ||
+      pump_.output() || pump_.testing() || commission_.active || mesh_.managementBusy() ||
+      store_.removingAddress() || !resultsSettled() || flowCalibrationLocked()) return false;
+  if (kind!=3 && store_.maintenance().locked) return false;
+  if (kind==3 && !store_.maintenance().locked) return false;
+  if (modeSequence_==UINT32_MAX) return false;
+  mode_={}; mode_.kind=kind; mode_.address=address;
+  mode_.token=kind==3 ? JobKey{store_.maintenance().epoch,store_.maintenance().generation} :
+    JobKey{store_.state().epoch,++modeSequence_};
+  mode_.expected=registeredMask(); mode_.began=now; mode_.sentAt=now-100;
+  if (!mode_.expected) { mode_={}; return false; }
+  return true;
+}
+void Application::modeTick(uint32_t now) {
+  if (!mode_.kind) return;
+  if (elapsed(now,mode_.began,12000) || !storageHealthy_ || !mesh_.healthy()) {
+    const auto pending=mode_; mode_={};
+    if (pending.kind==1) response(pending.ingress,pending.request,Reply::NotReady,{});
+    gateway_.publish("MODE_PROOF_FAILED outputs_locked"); maintenanceState(); return;
+  }
+  if (mode_.received==mode_.expected) {
+    const auto pending=mode_; mode_={};
+    if (pending.kind==1) {
+      modeApproved_=true; request(pending.request,pending.ingress,now); modeApproved_=false;
+    } else if (pending.kind==2) {
+      const int slot=scheduler_.find(pending.address);
+      if (slot<0 || modeSequence_==UINT32_MAX) { gateway_.publish("MAINT NOT_READY"); return; }
+      MaintenanceRecord record; record.locked=1; record.address=pending.address;
+      record.epoch=store_.state().epoch; record.generation=++modeSequence_; record.boot=pending.boot[slot];
+      if (!store_.writeMaintenance(record)) { storageHealthy_=false; gateway_.publish("STORAGE maintenance_locked"); return; }
+      auto grant=packet(Op::MaintenanceGrant,record.address); Writer w{grant};
+      w.key({record.epoch,record.generation}); w.u32(record.boot); w.u32(60000);
+      mesh_.send(grant); // A lost grant leaves the durable pump lock in place; never auto-unlock.
+      maintenanceState();
+    } else {
+      auto record=store_.maintenance(); record.locked=0;
+      mesh_.retire(record.address,{record.epoch,record.generation},Op::MaintenanceGrant);
+      if (!store_.writeMaintenance(record)) storageHealthy_=false;
+      maintenanceState();
+    }
+    return;
+  }
+  if (!elapsed(now,mode_.sentAt,100)) return;
+  for (size_t n=0;n<MaxNodes;++n) {
+    const auto i=mode_.cursor++%MaxNodes; const uint32_t bit=uint32_t(1)<<i;
+    if (!(mode_.expected & bit) || (mode_.received & bit)) continue;
+    auto p=packet(mode_.kind==3 ? Op::MaintenanceRetire : Op::ModeGet,store_.state().nodes[i].address);
+    Writer w{p}; w.key(mode_.token);
+    if (mode_.kind==3) w.u32(store_.maintenance().boot);
+    mesh_.send(p); mode_.sentAt=now; return;
+  }
+}
+bool Application::resultsSettled() const {
+  const auto &state = store_.state();
+  if (!savedJob_ || state.lastJob.unknown) return false;
+  if (!state.lastJob.key.valid()) return true;
+  if (state.lastJob.phase != SchedulePhase::Complete && state.lastJob.phase != SchedulePhase::Failed) return false;
+  for (size_t i=0;i<MaxNodes;++i) if (state.lastJob.selected & (uint32_t(1)<<i)) {
+    const auto &s=state.lastResults[i];
+    if (!terminalResult(s) || s.key!=state.lastJob.key || s.reason==Reason::Reboot) return false;
+  }
+  return true;
+}
+bool Application::commitReport(uint32_t now) {
+  if (!storageHealthy_) return false;
+  auto next=store_.state(); const auto report=scheduler_.report();
+  if (report.key!=next.lastJob.key) return false;
+  bool changed=report.selected!=next.lastJob.selected || report.complete!=next.lastJob.complete ||
+    report.failed!=next.lastJob.failed || report.unknown!=next.lastJob.unknown ||
+    report.phase!=next.lastJob.phase || report.reason!=next.lastJob.reason;
+  next.lastJob=report;
+  bool all=report.unknown==0 && !scheduler_.active();
+  for (size_t i=0;i<MaxNodes;++i) if (report.selected & (uint32_t(1)<<i)) {
+    const auto &s=scheduler_.node(i).status;
+    if (terminalResult(s) && s.key==report.key) {
+      changed=changed || !sameResult(s,next.lastResults[i]); next.lastResults[i]=s;
+    } else all=false;
+    if (s.reason==Reason::Reboot) all=false;
+  }
+  if (changed && !store_.write(next)) {
+    storageHealthy_=false; savedJob_=false;
+    scheduler_.stop(Reason::Transport,now); pump_.trip(PumpFault::Transport,now);
+    gateway_.publish("STORAGE result_pending outputs_locked"); return false;
+  }
+  savedJob_=all; return true;
 }
 bool Application::flowCalibrationLocked() const {
   const auto phase = store_.flowCalibration().phase;
@@ -42,6 +141,11 @@ void Application::response(uint16_t ingress, const ControlRequest &q, Reply resu
     }
     volume.ml = ml > UINT32_MAX ? UINT32_MAX : uint32_t(ml);
   } else if (key.valid() && result == Reply::Ok) result = Reply::Unknown;
+  if (key==scheduler_.report().key && !savedJob_ &&
+      (report.phase==SchedulePhase::Complete || report.phase==SchedulePhase::Failed)) {
+    report.phase=SchedulePhase::Draining;
+    report.unknown |= report.selected & ~(store_.state().lastJob.complete | store_.state().lastJob.failed);
+  }
   auto p = packet(Op::Response, ingress); Writer w{p}; w.u64(q.client); w.u32(q.sequence); w.u8(uint8_t(result)); w.key(key);
   w.u8(uint8_t(report.phase)); w.u32(report.selected); w.u32(report.complete); w.u32(report.failed); w.u32(report.unknown);
   w.u32(volume.ml); w.u32(volume.measured); w.u8(uint8_t(report.reason));
@@ -84,9 +188,8 @@ void Application::replayFlows(uint32_t now) {
     const size_t i = flowReplayCursor_;
     const uint32_t bit = uint32_t(1) << i;
     if (!(flowReplayMask_ & bit) || !(report.selected & bit)) { ++flowReplayCursor_; continue; }
-    const auto &live = scheduler_.node(i).status;
     const auto &saved = store_.state().lastResults[i];
-    const ValveStatus &s = live.key == flowReplayKey_ ? live : saved;
+    const ValveStatus &s = saved; // Only durable terminal measurements are replayable.
     if (s.key != flowReplayKey_) { ++flowReplayCursor_; continue; }
     const auto address = store_.resultAddress(flowReplayKey_, i);
     if (!unicast(address)) { ++flowReplayCursor_; continue; }
@@ -120,7 +223,6 @@ void Application::requeryUnknown(uint32_t now) {
 }
 void Application::request(ControlRequest q, uint16_t ingress, uint32_t now) {
   if (ingress && scheduler_.find(ingress) < 0) { response(ingress, q, Reply::Unauthorized, {}); return; }
-  if (!mesh_.ready() || mesh_.address() != store_.state().master || !storageHealthy_) { response(ingress, q, Reply::NotReady, {}); return; }
   if (q.action == Action::Stop) {
     if (q.epoch != store_.state().epoch || q.stopKey != scheduler_.report().key || !q.stopKey.valid()) {
       response(ingress, q, Reply::Stale, q.stopKey); return;
@@ -144,7 +246,7 @@ void Application::request(ControlRequest q, uint16_t ingress, uint32_t now) {
     }
     return;
   }
-  if (persisted.lastJob.unknown) { response(ingress, q, Reply::NotReady, {}); return; }
+  if (!mesh_.ready() || mesh_.address() != store_.state().master || !storageHealthy_) { response(ingress, q, Reply::NotReady, {}); return; }
   if (!mesh_.healthy()) { response(ingress, q, Reply::NotReady, {}); return; }
   if (mesh_.managementBusy()) { response(ingress, q, Reply::Busy, {}); return; }
   if (slot >= 0) {
@@ -152,9 +254,22 @@ void Application::request(ControlRequest q, uint16_t ingress, uint32_t now) {
     const Reply replay = replayDecision(old, q, persisted.clientAmounts[slot]);
     if (replay != Reply::Pending) { response(ingress, q, replay, old.key); return; }
   } else if (free < 0) { response(ingress, q, Reply::Capacity, {}); return; }
+  if (nodeCount(registeredMask())>ProductMaxNodes) { response(ingress,q,Reply::Capacity,{}); return; }
+  if (q.individual()) { response(ingress,q,Reply::Invalid,{}); return; }
+  if (store_.maintenance().locked) { response(ingress,q,Reply::Busy,{}); return; }
+  if (mode_.kind) {
+    if (mode_.kind==1 && mode_.request.client==q.client && mode_.request.sequence==q.sequence &&
+        mode_.request.mask==q.mask && mode_.request.ml==q.ml && mode_.request.maxMs==q.maxMs) return;
+    response(ingress,q,Reply::Busy,{}); return;
+  }
+  if (!resultsSettled()) { response(ingress,q,Reply::Pending,{}); return; }
   if (q.epoch != persisted.epoch || persisted.jobCounter == UINT32_MAX) { response(ingress, q, Reply::Stale, {}); return; }
   const auto allowed = scheduler_.check(q.mask, q.ml, q.maxMs, now, q.individual() ? q.amounts : nullptr);
   if (allowed != Reply::Ok) { response(ingress, q, allowed, {}); return; }
+  if (!modeApproved_) {
+    if (!beginMode(1,0,now)) { response(ingress,q,Reply::NotReady,{}); return; }
+    mode_.request=q; mode_.ingress=ingress; return;
+  }
   // Durable acceptance precedes PREPARE or any physical output. No eviction of client high-water marks.
   auto next = persisted; const JobKey key{next.epoch, ++next.jobCounter};
   auto &record = next.clients[slot >= 0 ? slot : free];
@@ -170,9 +285,19 @@ void Application::request(ControlRequest q, uint16_t ingress, uint32_t now) {
 }
 void Application::incoming(const Packet &p, uint32_t now) {
   if (p.peer == store_.removingAddress()) return;
+  if (p.op==Op::NodeState) {
+    Reader r{p}; const auto token=r.key(); const uint32_t boot=r.u32(); const auto flags=r.u8(); r.u8();
+    const int slot=scheduler_.find(p.peer);
+    if (!controlFormat(p) || !r.done() || !boot || !mode_.kind || token!=mode_.token || slot<0) return;
+    const uint32_t bit=uint32_t(1)<<slot;
+    if ((mode_.expected & bit) && flags==AutoSafeFlags) { mode_.received|=bit; mode_.boot[slot]=boot; }
+    else mode_.received&=~bit;
+    return;
+  }
   Reader r{p};
   if (scheduler_.find(p.peer) < 0) {
     if (p.op != Op::Hello || !mesh_.ownsSlave(p.peer) || !idle() || !storageHealthy_) return;
+    if (nodeCount(registeredMask())>=ProductMaxNodes) return;
     Reader hello{p}; const uint32_t k=hello.u32(), version=hello.u32(); const auto configured=hello.u8();
     const uint32_t buildId=hello.u32();
     if (!hello.done() || !validK(k) || !version || configured>1 || !buildId) return;
@@ -271,11 +396,16 @@ void Application::incoming(const Packet &p, uint32_t now) {
     commissionResult(request, commission_.slot, p.peer, result, configured == 1);
     commission_.active = false;
   } else if (p.op == Op::Result) {
-    ValveStatus s; if (!decodeResult(p, s)) return;
+    ValveStatus s; if (!decodeResult(p, s) || !terminalResult(s)) return;
+    const int identitySlot=scheduler_.find(p.peer);
+    if (identitySlot<0 || store_.resultAddress(s.key,size_t(identitySlot))!=p.peer ||
+        s.key!=store_.state().lastJob.key || !(store_.state().lastJob.selected & (uint32_t(1)<<identitySlot))) return;
     if (!scheduler_.result(p.peer, s, now)) return;
     const int slot = scheduler_.find(p.peer); const uint32_t bit = uint32_t(1) << slot;
     const auto &current = scheduler_.node(slot).status;
     const auto &report = scheduler_.report();
+    // result() can return true even when status() rejected a stale revision.
+    if (!sameResult(current,s) || report.key!=s.key || !(report.selected & bit)) return;
     const auto &flow = store_.flowCalibration();
     if (flow.key == s.key && flow.phase != FlowCalibrationPhase::Idle &&
         (s.phase == Phase::Done || s.phase == Phase::Fault)) {
@@ -291,22 +421,12 @@ void Application::incoming(const Packet &p, uint32_t now) {
       }
       flowCalibrationStatus(next.phase == FlowCalibrationPhase::Complete ? Reply::Ok : Reply::NotReady);
     }
-    if (current.key == s.key && current.revision == s.revision && s.key == report.key &&
-        (report.selected & bit) && (s.phase == Phase::Done || s.phase == Phase::Fault))
-      publishFlow(p.peer, s.key, s.pulses, s.k, s.phase, s.reason, s.revision, true);
-    const auto &last = store_.state().lastJob;
-    if (!scheduler_.active() && !pump_.output() && s.key.valid() && s.key == last.key &&
-        (last.selected & bit) && (last.unknown & bit) && s.reason != Reason::Reboot &&
-        (s.phase == Phase::Done || s.phase == Phase::Fault)) {
-      auto next = store_.state(); next.lastResults[slot] = s; next.lastJob = scheduler_.report();
-      if (!store_.write(next)) { storageHealthy_ = false; pump_.trip(PumpFault::Transport, now); }
-      else {
-        savedJob_ = true;
-        if (resultQueryOwnerPending_ && resultQueryKey_ == s.key) {
-          response(resultQueryIngress_, resultQueryOwner_, Reply::Ok, s.key);
-          if (!scheduler_.report().unknown) resultQueryOwnerPending_ = false;
-        }
-      }
+    if (!commitReport(now)) return;
+    if (!sameResult(store_.state().lastResults[slot],s)) return;
+    publishFlow(p.peer,s.key,s.pulses,s.k,s.phase,s.reason,s.revision,true);
+    if (resultQueryOwnerPending_ && resultQueryKey_==s.key) {
+      response(resultQueryIngress_,resultQueryOwner_,Reply::Ok,s.key);
+      if (resultsSettled()) resultQueryOwnerPending_=false;
     }
     auto ack = packet(Op::ResultAck, p.peer); Writer w{ack}; w.key(s.key); w.u32(s.revision); mesh_.send(ack);
   } else if (p.op == Op::Request) {
@@ -356,16 +476,50 @@ void Application::command(CommandLine &line, uint32_t now) {
   if (!count) return;
   auto number = [&](size_t index, uint64_t &v, unsigned base = 10) { return index < count && unsignedNumber(tokens[index], v, base); };
   const char *op = tokens[0];
+  if (!strcmp(op,"maintenance-status") && count==1) { maintenanceState(); return; }
+  if (!strcmp(op,"maintenance-enter") || !strcmp(op,"maintenance-exit")) {
+    if (line.bluetooth) { gateway_.publish("UNAUTHORIZED maintenance_requires_USB"); return; }
+    const bool enter=!strcmp(op,"maintenance-enter"); uint64_t address=0;
+    if ((enter && (count!=3 || !number(1,address,16) || address>0x7fff ||
+        scheduler_.find(uint16_t(address))<0 || strcmp(tokens[2],"CONFIRM"))) ||
+        (!enter && (count!=2 || strcmp(tokens[1],"CONFIRM")))) { gateway_.publish("INVALID maintenance_fields"); return; }
+    if (!beginMode(enter?2:3,uint16_t(address),now)) gateway_.publish("BUSY maintenance");
+    else maintenanceState();
+    return;
+  }
+  // Basic release keeps recovery/query/stop paths for old sessions, but admits
+  // only the shared-volume task through the all-branch mode proof.
+  if (!strcmp(op,"flow-cal-start") || !strcmp(op,"pump-test") || !strcmp(op,"pump-dry-test") ||
+      !strcmp(op,"start-each") || (!strcmp(op,"pump-speed") && (scheduler_.active() || store_.maintenance().locked || mode_.kind))) {
+    gateway_.publish("UNSUPPORTED basic_release"); return;
+  }
   if (!strcmp(op, "hello") && count == 1) {
-    char text[192]; snprintf(text, sizeof(text), "HELLO role=%s addr=%04x master=%04x epoch=%lu mesh=%u commissioned=%u pump_fault=%s individual=1 build=%08lx tx_healthy=%u calibration=1 flow_calibration=1",
+    char text[192]; snprintf(text, sizeof(text), "HELLO role=%s addr=%04x master=%04x epoch=%lu mesh=%u commissioned=%u pump_fault=%s individual=0 build=%08lx tx_healthy=%u calibration=0 flow_calibration=0",
       "PUMP_MASTER", mesh_.address(), store_.state().master,
       static_cast<unsigned long>(store_.state().epoch), mesh_.ready(),
-      board::pumpConfig().valid(), pumpFaultName(pump_.fault()),(unsigned long)PUMP_BUILD_ID,mesh_.healthy()); gateway_.publish(text); return;
+      board::pumpConfig().valid(), pumpFaultName(pump_.fault()),(unsigned long)PUMP_BUILD_ID,mesh_.healthy()); gateway_.publish(text);
+    snprintf(text,sizeof(text),"CAPS epoch=%lu max_nodes=%u max_concurrent=%u basic=1 maintenance=1",
+      (unsigned long)store_.state().epoch,unsigned(ProductMaxNodes),unsigned(board::MaxConcurrent)); gateway_.publish(text);
+    maintenanceState(); return;
   }
   if (!strcmp(op, "local") && count == 1) {
     localState(now); pumpPwmState(); meshState(); return;
   }
-  if (!strcmp(op, "mesh-diag") && count == 1) { meshState(); return; }
+  if (!strcmp(op, "mesh-diag") && count == 1) { meshState(); mesh_.logDiscoveryDiagnostics(); return; }
+#if defined(PUMP_DISCOVERY_TRACE)
+  if (!strcmp(op, "discovery-phone-adv")) {
+    if (line.bluetooth) { gateway_.publish("UNAUTHORIZED maintenance_requires_USB"); return; }
+    if (count != 2 || (strcmp(tokens[1], "on") && strcmp(tokens[1], "off"))) {
+      gateway_.publish("INVALID discovery_phone_adv_fields"); return;
+    }
+    if (!idle() || pump_.testing() || commission_.active || mesh_.managementBusy()) {
+      gateway_.publish("BUSY discovery_phone_adv"); return;
+    }
+    gateway_.publish(gateway_.setDiagnosticAdvertising(!strcmp(tokens[1], "on"))
+      ? "OK discovery_phone_adv_requested" : "BUSY discovery_phone_adv_failed");
+    return;
+  }
+#endif
   if (!strcmp(op, "flow-cal-start")) {
     uint64_t epoch=0, client=0, request=0, slot=0, address=0, standardMl=0, speed=0;
     if (count != 8 || !number(1,epoch) || !epoch || epoch>UINT32_MAX ||
@@ -703,7 +857,7 @@ void Application::command(CommandLine &line, uint32_t now) {
     if (commission_.active) { fail(Reply::Busy); return; }
     if (!storageHealthy_) { fail(Reply::Storage); return; }
     if (!mesh_.ready() || !mesh_.ownsSlave(address)) { fail(Reply::Unauthorized); return; }
-    if (scheduler_.active() || pump_.output() || pump_.testing() || store_.state().lastJob.unknown || mesh_.managementBusy()) {
+    if (!idle() || pump_.testing() || mesh_.managementBusy()) {
       fail(Reply::Busy); return;
     }
     const auto &node = scheduler_.node(slot - 1);
@@ -717,8 +871,7 @@ void Application::command(CommandLine &line, uint32_t now) {
   }
   if (!strcmp(op, "pump-reset")) {
     if (!line.bluetooth && count == 1) {
-      if (!storageHealthy_ || commission_.active || scheduler_.active() || pump_.output() || pump_.testing() ||
-          store_.state().lastJob.unknown || mesh_.managementBusy()) {
+      if (!idle() || commission_.active || pump_.testing() || mesh_.managementBusy()) {
         gateway_.publish("BUSY pump_reset_requires_idle"); return;
       }
       gateway_.publish(replyName(pump_.reset(now))); return;
@@ -749,6 +902,8 @@ void Application::command(CommandLine &line, uint32_t now) {
         slot < 1 || slot > MaxNodes || address > 0x7FFF || !unicast(address) || address == store_.state().master ||
         k > 1000000 || !validK(k) || !ver || ver > UINT32_MAX) { gateway_.publish("INVALID node"); return; }
     const int old = scheduler_.find(address);
+    if (!store_.state().nodes[slot-1].address && nodeCount(registeredMask())>=ProductMaxNodes) { gateway_.publish("CAPACITY node"); return; }
+    if (store_.state().nodes[slot-1].address && store_.state().nodes[slot-1].address!=address) { gateway_.publish("CONFLICT remove_node_first"); return; }
     if (old >= 0 && size_t(old) != slot - 1) { gateway_.publish("CONFLICT node_address"); return; }
     auto next = store_.state(); next.nodes[slot - 1] = {uint16_t(address), uint32_t(k), uint32_t(ver)};
     if (!store_.write(next)) { storageHealthy_ = false; gateway_.publish("STORAGE"); return; }
@@ -810,8 +965,12 @@ void Application::flowCalibrationStatus(Reply reply, uint64_t client, uint32_t r
 }
 void Application::meshState(uint32_t request) {
   const auto &s=mesh_.management(); char line[192];
-  snprintf(line,sizeof(line),"MESH epoch=%lu req=%lu op=%lu scan=%lu phase=%s busy=%u capable=%u reason=%s found=%u target=%04x remove=1",
-    (unsigned long)store_.state().epoch,(unsigned long)request,(unsigned long)s.operation,(unsigned long)s.scan,s.phase,s.busy,s.capable,s.reason,s.found,s.target); gateway_.publish(line);
+  snprintf(line,sizeof(line),"MESH epoch=%lu req=%lu op=%lu scan=%lu phase=%s busy=%u capable=%u reason=%s found=%u target=%04x step=%u attempt=%u retry_wait=%u retry_ms=%u remove=1",
+    (unsigned long)store_.state().epoch,(unsigned long)request,(unsigned long)s.operation,(unsigned long)s.scan,s.phase,s.busy,s.capable,s.reason,s.found,s.target,
+    unsigned(s.configStep),unsigned(s.configAttempt),s.configRetryWait,unsigned(s.configRetryRemainingMs)); gateway_.publish(line);
+  snprintf(line,sizeof(line),"MESH_BUDGET epoch=%lu op=%lu remaining_ms=%lu recovery=%s",
+    (unsigned long)store_.state().epoch,(unsigned long)s.operation,(unsigned long)s.remainingTotalMs,s.recoveryAction);
+  gateway_.publish(line);
   for (unsigned i=0;i<s.found;++i) { char id[33]; for (unsigned j=0;j<16;++j) snprintf(id+2*j,3,"%02x",s.candidates[i].uuid[j]);
     snprintf(line,sizeof(line),"CAND epoch=%lu scan=%lu uuid=%s",(unsigned long)store_.state().epoch,(unsigned long)s.scan,id); gateway_.publish(line); }
 }
@@ -900,12 +1059,7 @@ void Application::periodic(uint32_t now) {
   if (pumpTestOwner_.client && (testOutputPublished_ != pump_.testing() ||
       (pump_.testing() && elapsed(now, testPublishedAt_, 1000)))) pumpTestReply(pumpTestOwner_, Reply::Ok, now);
   const auto report = scheduler_.report();
-  if (!savedJob_ && !scheduler_.active() && !pump_.output()) {
-    auto next = store_.state(); next.lastJob = report;
-    for (size_t i = 0; i < MaxNodes; ++i) next.lastResults[i] = scheduler_.node(i).status;
-    storageHealthy_ = store_.write(next); savedJob_ = true;
-    if (!storageHealthy_) pump_.trip(PumpFault::Transport, now);
-  }
+  if (!savedJob_ && !scheduler_.active() && !pump_.output()) commitReport(now);
   if (report.phase != lastPhase_ || strcmp(lastGuard_,scheduler_.guard())!=0) {
     lastGuard_=scheduler_.guard();
     ESP_LOGD("start_guard","t=%lu job=%lu:%lu phase=%u guard=%s closed=%08lx final=%08lx",
@@ -970,6 +1124,7 @@ void Application::run() {
     Packet p;
     for (unsigned count = 0; count < 4 && mesh_.receive(p); ++count) incoming(p, now);
     CommandLine commandLine; if (gateway_.receive(commandLine)) command(commandLine, now);
+    modeTick(now);
     scheduler_.tick(now);
     const auto &calibration = store_.flowCalibration();
     if (calibration.phase == FlowCalibrationPhase::Starting &&

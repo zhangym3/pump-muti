@@ -13,6 +13,9 @@ class ControlGateway {
   bool publishLive(const char *text);
   void ioWorker();
   uint32_t bluetoothStackMinimumBytes() const;
+#if defined(PUMP_DISCOVERY_TRACE)
+  bool setDiagnosticAdvertising(bool enabled);
+#endif
   bool overflow() { return overflow_.exchange(false); }
  private:
   QueueHandle_t commands_ = nullptr, output_ = nullptr, liveOutput_ = nullptr;

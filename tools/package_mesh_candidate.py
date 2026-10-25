@@ -21,6 +21,8 @@ def sha(path):
 
 
 def run(root, *args):
+    if args[0] == "git":
+        args = ("git", "-c", "safe.directory=" + root.as_posix(), *args[1:])
     return subprocess.check_output(list(args), cwd=root, encoding="utf-8").strip()
 
 
@@ -47,6 +49,9 @@ def partition_table(path):
 def firmware(root, env, chip, nm, evidence_label, max_concurrent=None):
     build = json.loads((root / ".mesh-sdk/build.json").read_text(encoding="utf-8"))
     for name, digest in build["inputs"].items():
+        if name == "@environment":
+            require(digest == env, "Build environment identity mismatch")
+            continue
         require(sha(root / name) == digest, "Source changed since build: " + str(root / name))
     identity = hashlib.sha256(json.dumps(build["inputs"], sort_keys=True).encode()).hexdigest()
     require(build["source_sha256"] == identity and build["build_id"] == identity[:8],
@@ -132,33 +137,52 @@ def main():
     require(re.fullmatch(r"[a-z0-9-]+", master_label), "Invalid master evidence label")
     for report in args.report:
         require(report.is_file(), "Missing report: " + str(report))
+    if label == "basic-five":
+        for name in ("README.md", "node-inventory.csv", "B-communication.csv", "C-tasks.csv",
+                     "C-branch-measurements.csv", "D-protection-and-timing.csv"):
+            require((master / "docs/basic-five-records" / name).is_file(), "Missing bench record template: " + name)
     require(not target.exists() and not target.with_suffix(".zip").exists(), "Output already exists")
     for root in (master, slave, app):
         require(not target.is_relative_to(root / "src") and target != root, "Invalid output path")
     tools = args.platformio_home / "packages"
     info = {
-        "master": firmware(master, args.master_env, "esp32s3", tools / "toolchain-xtensa-esp-elf/bin/xtensa-esp32s3-elf-nm.exe", master_label, candidate_concurrency),
+        "master": firmware(master, args.master_env, "esp32c3", tools / "toolchain-riscv32-esp/bin/riscv32-esp-elf-nm.exe", master_label, candidate_concurrency),
         "slave": firmware(slave, "valve_slave_c3", "esp32c3", tools / "toolchain-riscv32-esp/bin/riscv32-esp-elf-nm.exe", label),
     }
     board = (master / "include/board_profile.h").read_text(encoding="utf-8")
     require(re.search(r"#define\s+PUMP_MAX_CONCURRENT\s+1\b", board) and
             re.search(r"MaxConcurrent\s*=\s*PUMP_MAX_CONCURRENT\s*;", board),
             "Production default concurrency must stay 1")
-    for name in ("protocol.h", "mesh_tx_governor.h", "mesh_tx_diagnostics.h"):
+    for name in ("protocol.h", "mesh_tx_governor.h", "mesh_tx_diagnostics.h", "maintenance_session.h", "result_commit.h"):
         require((master / "include" / name).read_bytes() == (slave / "include" / name).read_bytes(),
                 "Master/slave shared header differs: " + name)
     protocol = (master / "include/protocol.h").read_text(encoding="utf-8")
-    require(re.search(r"ProtocolRevision\s*=\s*4\s*[,;]", protocol) and
-            re.search(r"RequiredFeatures\s*=\s*0x01[Ff][Ff]\s*;", protocol), "Expected V4 capabilities")
+    revision = re.search(r"ProtocolRevision\s*=\s*(\d+)\s*[,;]", protocol)
+    features = re.search(r"RequiredFeatures\s*=\s*(0x[0-9a-fA-F]+)\s*;", protocol)
+    require(revision and features, "Missing protocol capabilities")
+    revision, features = int(revision.group(1)), int(features.group(1), 16)
+    if label == "basic-five":
+        require(revision == 6 and features == 0x15ff, "Expected basic-five V6 capabilities")
     require(info["master"]["sdk_patch_identity"] == info["slave"]["sdk_patch_identity"], "SDK patch mismatch")
     expectations = {
-        master / f".pio/host-{label}.log": ["30 test groups passed", "PASS governor", "PASS simulated 8h/5 nodes"] +
+        master / f".pio/host-{label}.log": ["PASS governor", "PASS simulated 8h/5 nodes"] +
             [f"PASS {n} nodes x 1000 batches" for n in (1, 2, 5)],
         master / f".pio/sdk-{label}.log": ["PASS SDK host harness and complete component pinning"],
         master / f".pio/log-tools-{label}.log": ["OK"],
         slave / f".pio/host-{label}.log": ["slave flow tests passed"],
         app_test_log: ["BUILD SUCCESSFUL"],
     }
+    host_log = (master / f".pio/host-{label}.log").read_text(encoding="utf-8")
+    groups = re.search(r"^(\d+) test groups passed$", host_log, re.M)
+    require(groups and int(groups.group(1)) >= (33 if label == "basic-five" else 30), "Missing core test groups")
+    if label == "basic-five":
+        expectations[master / f".pio/host-{label}.log"] += [
+            "PASS durable result commit failure latch", "PASS boot-bound maintenance tokens",
+            "PASS all 31 five-node masks"]
+        expectations[slave / f".pio/host-{label}.log"] += [
+            "PASS unsaved terminal measurement survives newer CLOSE and PREPARE",
+            "PASS maintenance expiry closes held valve"]
+        expectations[master / f".pio/architecture-{label}.log"] = ["role boundary: PASS"]
     if label == "v4":
         expectations[master / ".pio/host-v4.log"] += ["PASS V4 early StartOK/rejection", "1000 randomized five-node batches"]
         expectations[master / ".pio/architecture-v4.log"] = ["PASS"]
@@ -182,7 +206,7 @@ def main():
         failures += int(suite.get("failures", 0))
         errors += int(suite.get("errors", 0))
         skipped += int(suite.get("skipped", 0))
-    require(tests >= 78 and failures == errors == skipped == 0, "APP test result mismatch")
+    require(tests >= (136 if label == "basic-five" else 78) and failures == errors == skipped == 0, "APP test result mismatch")
     info["app"] = {"variant": "debug", "tests": tests, "failures": failures, "errors": errors,
                    "apk_sha256": sha(app_apk)}
     if args.app_evidence_reference:
@@ -226,6 +250,8 @@ def main():
         copy(master / (".pio/" + name + "-" + label + ".log"), "evidence/" + name + "-tests.log")
     copy(master / ".pio/sdk-tests/extracted.json", "evidence/sdk-extracted.json")
     copy(app_test_log, "app/build-tests.log")
+    if label == "basic-five":
+        copy(master / f".pio/architecture-{label}.log", "evidence/architecture-tests.log")
     if label == "v4":
         copy(master / ".pio/architecture-v4.log", "evidence/architecture-tests.log")
         copy(master / ".pio/v3-field-replay.log", "evidence/v3-field-replay.log")
@@ -238,7 +264,7 @@ def main():
     copy(app_metadata, "app/output-metadata.json")
     for path in xml_files:
         copy(path, "app/test-results/" + path.name)
-    if label != "v4":
+    if label not in ("v4", "basic-five"):
         for path in (master / "docs").glob("MESH_*ACCEPTANCE*20261019.*"):
             copy(path, "docs/" + path.name)
         for path in (master / "docs").glob("MESH_FIELD_*20261019.*"):
@@ -247,6 +273,15 @@ def main():
             copy(master / "docs" / name, "docs/" + name)
     for report in args.report:
         copy(report, "docs/" + report.name)
+    if label == "basic-five":
+        for name in ("COMMISSIONING.md", "PROTOCOL.md", "ARCHITECTURE_REASSESSMENT_20261025.md",
+                     "MESH_SAR_ROOT_CAUSE_FIX_PLAN_20261024.md"):
+            copy(master / "docs" / name, "docs/" + name)
+        for path in sorted((master / "docs/basic-five-records").rglob("*")):
+            if path.is_file():
+                copy(path, "docs/basic-five-records/" + path.relative_to(master / "docs/basic-five-records").as_posix())
+        for role, root in (("master", master), ("slave", slave), ("app", app)):
+            copy(root / "README.md", "docs/" + role + "-README.md")
     for role, root in (("master", master), ("slave", slave), ("app", app)):
         state = {"head": run(root, "git", "rev-parse", "HEAD"),
                  "branch": run(root, "git", "branch", "--show-current"),
@@ -264,8 +299,9 @@ def main():
     record = {
         "kind": "software_candidate_not_hardware_accepted",
         "created_utc": datetime.now(timezone.utc).isoformat(), "production_max_concurrent": 1,
-        "candidate_max_concurrent": candidate_concurrency, "available_slave_devices": 1,
-        "protocol_revision": 4, "required_features": "0x01ff",
+        "candidate_max_concurrent": candidate_concurrency, "available_slave_devices": 5 if label == "basic-five" else None,
+        "hardware_testing_available": False if label == "basic-five" else None,
+        "protocol_revision": revision, "required_features": f"0x{features:04x}",
         "packaging_opens_devices": False, "packaging_uploads_firmware": False, "packaging_starts_pump": False,
         "software_evidence": "PASS; see test logs and acceptance report",
         "firmware_evidence_label": label, "master_evidence_label": master_label,
@@ -280,13 +316,21 @@ def main():
         "flash_note": "Use flash_files here. IDF native flash_args/flasher_args.json are NOT the PlatformIO upload layout.",
         "rollback_note": "Master NVS format 3; old firmware may not read it. Preserve fences/replay records; never blindly erase NVS.",
     }
+    if label == "basic-five":
+        record["pending"] = [
+            "A: complete Application + NVS/RTOS fault injection and actual persistence/callback ordering coverage",
+            "B: five devices simultaneously online, 20 system rounds / 100 node-rounds; phone connected/disconnected each >=10 rounds; all outputs zero",
+            "C: all 31 nonempty masks, 85 water tasks; each branch error <= max(10mL, 5% target)",
+            "C: measured electrical stop/release latency <=50ms and final-valve-to-pump-stop timing",
+            "D: phone/link loss, master/slave reboot, no-flow/stall, result persistence failures and maintenance interlock",
+            "RF/SAR callback attribution, SDK idempotent configuration readback, heap/stack/queue peaks and worst control-loop interval"]
     (target / "candidate.json").write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     text = """Mesh 软件候选包（硬件未验收）
 
 主机生产默认并发保持 1；台架五路候选环境支持并发 5，实际包配置见 candidate.json 的 candidate_max_concurrent。
 本打包工具不刷写设备或启泵。先阅读 docs/ 下实施报告和现场验收步骤；仅 1 台从机，五路尚未实机验收。
 master/firmware.bin 与 slave/firmware.bin 均位于 0x20000。
-ESP32-S3 主机和 ESP32-C3 从机 bootloader.bin 均位于 0x0；两端 partitions.bin 均位于 0x8000。
+ESP32-C3 主机和 ESP32-C3 从机 bootloader.bin 均位于 0x0；两端 partitions.bin 均位于 0x8000。
 精确芯片/地址/SHA256 见 candidate.json，SHA256SUMS 覆盖包内文件。
 不要使用 IDF 辅助 flash_args 中的 0x10000；刷写前确认 PlatformIO 中主从端口并核对设备身份。
 APK 为 debug 候选构建，未安装到手机、未验收真机重连/重启 UI。
@@ -294,6 +338,8 @@ source/ 为三仓当前构建相关源码快照，未包含 Git 历史或全局 
 source/master、source/slave 对应原 pump-muti、pump-muti-slave；运行跨仓host测试时恢复这两个相邻目录名。
 主机 NVS 已升级 format 3，回退前必须制定状态迁移/恢复步骤，不能盲目清空 fence。
 """
+    if label == "basic-five":
+        text = text.replace("仅 1 台从机，五路尚未实机验收。", "用户已有 5 台从机，但本轮无实机测试条件，B/C/D 均未验收。")
     if label == "offline-fix":
         text += "\n本包为从机离线修复；优先阅读 docs/SLAVE_OFFLINE_FIX_20261019.md。旧实施报告记录历史版本。\n"
         text += "故障后仅恢复诊断通信，业务保持锁存停机；缺失完成回调禁止恢复发送。新业务须先受控重启并核对状态。\n"

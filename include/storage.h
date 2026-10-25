@@ -7,6 +7,7 @@
 #include "persistent_state.h"
 #include "flow_calibration_state.h"
 #include "speed_calibration.h"
+#include "maintenance_session.h"
 namespace pump {
 class Storage {
  public:
@@ -22,6 +23,8 @@ class Storage {
   uint16_t removingAddress() const { return removingAddress_; }
   bool beginRemoval(uint16_t address);
   bool finishRemoval();
+  const MaintenanceRecord &maintenance() const { return maintenance_; }
+  bool writeMaintenance(const MaintenanceRecord &value);
   uint16_t resultAddress(JobKey job, size_t slot) const {
     return slot < MaxNodes ? resultAddresses_.address(job, slot, state_.nodes[slot].address) : 0;
   }
@@ -32,5 +35,6 @@ class Storage {
   FlowCalibrationState flowCalibration_;
   uint16_t removingAddress_ = 0;
   ResultAddresses resultAddresses_;
+  MaintenanceRecord maintenance_;
 };
 }

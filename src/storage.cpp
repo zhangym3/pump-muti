@@ -39,6 +39,12 @@ bool Storage::open(uint32_t profile) {
        !validFlowCalibrationState(flowCalibration_))) return false;
   if (flowCalibrationErr == ESP_ERR_NVS_NOT_FOUND) flowCalibration_ = {};
   if (state_.epoch == UINT32_MAX) return false;
+  size_t maintenanceSize=sizeof(maintenance_);
+  const auto maintenanceErr=nvs_get_blob(handle_,"maintenance",&maintenance_,&maintenanceSize);
+  if (maintenanceErr!=ESP_ERR_NVS_NOT_FOUND &&
+      (maintenanceErr!=ESP_OK || maintenanceSize!=sizeof(maintenance_) || maintenance_.format!=1 ||
+       maintenance_.locked>1 || (maintenance_.locked && (!unicast(maintenance_.address) ||
+       !maintenance_.epoch || !maintenance_.generation || !maintenance_.boot)))) return false;
   ++state_.epoch;
   if (state_.lastJob.phase >= SchedulePhase::Preparing && state_.lastJob.phase <= SchedulePhase::Between) {
     state_.lastJob.phase = SchedulePhase::Failed;
@@ -105,7 +111,7 @@ bool Storage::clearCalibration(size_t slot) {
   calibrations_ = next; return true;
 }
 bool Storage::beginRemoval(uint16_t address) {
-  if (!handle_ || removingAddress_ || !unicast(address)) return false;
+  if (!handle_ || removingAddress_ || maintenance_.locked || !unicast(address)) return false;
   if (state_.lastJob.key.valid() && resultAddresses_.key != state_.lastJob.key) {
     ResultAddresses next; next.key = state_.lastJob.key;
     for (size_t i = 0; i < MaxNodes; ++i) next.nodes[i] = state_.nodes[i].address;
@@ -126,5 +132,14 @@ bool Storage::finishRemoval() {
   uint16_t verify = 0;
   if (nvs_get_u16(handle_, "remove_addr", &verify) != ESP_ERR_NVS_NOT_FOUND) return false;
   removingAddress_ = 0; return true;
+}
+bool Storage::writeMaintenance(const MaintenanceRecord &value) {
+  if (!handle_ || value.format!=1 || value.locked>1 ||
+      (value.locked && (!unicast(value.address) || !value.epoch || !value.generation || !value.boot))) return false;
+  if (nvs_set_blob(handle_,"maintenance",&value,sizeof(value))!=ESP_OK || nvs_commit(handle_)!=ESP_OK) return false;
+  MaintenanceRecord verify; size_t size=sizeof(verify);
+  if (nvs_get_blob(handle_,"maintenance",&verify,&size)!=ESP_OK || size!=sizeof(value) ||
+      memcmp(&verify,&value,size)) return false;
+  maintenance_=value; return true;
 }
 }

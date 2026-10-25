@@ -1,15 +1,20 @@
 #pragma once
 #include "master_scheduler.h"
 #include "mesh_tx_governor.h"
+#include "mesh_discovery_cache.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include <atomic>
 namespace pump {
-struct MeshCandidate { uint8_t uuid[16] = {}; uint8_t addr[6] = {}; uint8_t type = 0; uint16_t oob = 0; };
 struct MeshManagement {
   const char *phase = "STARTING", *reason = "NONE";
   bool capable = false, busy = true;
   uint32_t operation = 0, scan = 0; uint8_t found = 0; uint16_t target = 0;
+  uint8_t configStep = 0, configAttempt = 0;
+  bool configRetryWait = false;
+  uint16_t configRetryRemainingMs = 0;
+  uint32_t remainingTotalMs = 0;
+  const char *recoveryAction = "NONE";
   MeshCandidate candidates[8];
 };
 class MeshTransport final : public MeshSender {
@@ -31,6 +36,7 @@ class MeshTransport final : public MeshSender {
   bool healthy() const override;
   MeshTxGovernor::Metrics metrics() const;
   MeshTxGovernor::Diagnostics diagnostics() const;
+  void logDiscoveryDiagnostics() const;
   void trackedEvent(uint32_t ticket, uint8_t event, int error);
   void managementTick(uint32_t now);
   bool managementBusy() const;

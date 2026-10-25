@@ -1,0 +1,2 @@
+# Diagnosis only; do not use this setting as a production fix without evidence.
+# CONFIG_BLE_MESH_USE_DUPLICATE_SCAN is not set
