@@ -1,10 +1,17 @@
 #include "storage.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
+#include "esp_mac.h"
+#include "esp_random.h"
 namespace pump {
+bool Storage::identityRandom(uint8_t *out,size_t size) { esp_fill_random(out,size); return true; }
 bool Storage::open(uint32_t profile) {
   // Deliberately do not erase NVS on errors: that would remove replay fences/keys.
   if (nvs_flash_init() != ESP_OK || nvs_open("pumpmulti", NVS_READWRITE, &handle_) != ESP_OK) return false;
+  recovery::Id physical{{0xdd,0xdd,0x50,0x4d}};
+  if (esp_read_mac(physical.data()+4,ESP_MAC_BT)!=ESP_OK || !identityBackend_.open("master_identity")) return false;
+  physical[10]=1;
+  if (identity_.load(physical)==recovery::JournalState::Fault) return false;
   size_t size = 0;
   const auto err = nvs_get_blob(handle_, "state", nullptr, &size);
   if (err == ESP_ERR_NVS_NOT_FOUND) { state_ = PersistentState{}; state_.profile = profile; }

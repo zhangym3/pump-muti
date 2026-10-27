@@ -1,10 +1,12 @@
 #include "control_gateway.h"
+#include "gateway_session.h"
+#include "sdkconfig.h"
 #include "esp_gap_ble_api.h"
 #include "esp_gatts_api.h"
 #include "esp_log.h"
 #include "esp_ble_mesh_ble_api.h"
-#include "driver/usb_serial_jtag.h"
-#include "driver/usb_serial_jtag_vfs.h"
+#include "driver/uart.h"
+#include "driver/uart_vfs.h"
 #include "freertos/task.h"
 #include <cstdio>
 #include <cstring>
@@ -12,12 +14,19 @@
 
 namespace pump {
 namespace {
+#if defined(CONFIG_PUMP_DEV_NO_PIN)
+constexpr bool RequirePin = false;
+#else
+constexpr bool RequirePin = true;
+#endif
 ControlGateway *gateway = nullptr;
 uint32_t pinCode = 0;
 esp_gatt_if_t interface = ESP_GATT_IF_NONE;
 uint16_t handles[6] = {}, connection = 0, mtu = 23;
 uint8_t remote[6] = {};
 std::atomic<bool> connected{false}, secure{false}, subscribed{false}, advertising{false}, pendingAdv{false};
+GatewaySession commandSession;
+uint32_t connectionGeneration = 0;
 #if defined(PUMP_DISCOVERY_TRACE)
 std::atomic<bool> diagnosticAdvertisingPaused{false};
 #endif
@@ -43,7 +52,7 @@ void startAdvertising() {
 #if defined(PUMP_DISCOVERY_TRACE)
   if (diagnosticAdvertisingPaused) return;
 #endif
-  if (!pinCode || connected || advertising || pendingAdv.exchange(true)) return;
+  if ((RequirePin && !pinCode) || connected || advertising || pendingAdv.exchange(true)) return;
   esp_ble_mesh_ble_adv_param_t params{};
   params.interval = 0xA0; params.adv_type = ADV_TYPE_IND; params.own_addr_type = BLE_ADDR_TYPE_PUBLIC;
   params.duration = 120; params.period = 500; params.count = ESP_BLE_MESH_BLE_ADV_INFINITE;
@@ -104,20 +113,19 @@ void gapCb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *p) {
       PeerAddress(request.bd_addr).text, int(accept), esp_err_to_name(result));
   } else if (event == ESP_GAP_BLE_PASSKEY_REQ_EVT) {
     auto &request = p->ble_security.ble_req;
-    const bool accept = sameRemote(request.bd_addr);
+    const bool accept = RequirePin && sameRemote(request.bd_addr);
     const esp_err_t result = esp_ble_passkey_reply(request.bd_addr, accept, pinCode);
     ESP_LOGI("gateway", "BLE passkey request: peer=%s accept=%d result=%s",
       PeerAddress(request.bd_addr).text, int(accept), esp_err_to_name(result));
   } else if (event == ESP_GAP_BLE_PASSKEY_NOTIF_EVT && sameRemote(p->ble_security.key_notif.bd_addr)) {
-    ESP_LOGI("gateway", "BLE PIN entry required on phone: peer=%s current PIN=%06lu",
-      PeerAddress(p->ble_security.key_notif.bd_addr).text,
-      static_cast<unsigned long>(p->ble_security.key_notif.passkey));
+    ESP_LOGI("gateway", "BLE PIN entry required on phone: peer=%s",
+      PeerAddress(p->ble_security.key_notif.bd_addr).text);
   } else if (event == ESP_GAP_BLE_KEY_EVT && sameRemote(p->ble_security.ble_key.bd_addr)) {
     // Log key types only, never encryption or identity key material.
     ESP_LOGI("gateway", "BLE key exchanged: peer=%s type=0x%02x",
       PeerAddress(p->ble_security.ble_key.bd_addr).text, unsigned(p->ble_security.ble_key.key_type));
   } else if (event == ESP_GAP_BLE_NC_REQ_EVT) {
-    ESP_LOGW("gateway", "BLE numeric comparison rejected: peer=%s; PIN entry required",
+    ESP_LOGW("gateway", "BLE unexpected numeric comparison rejected: peer=%s",
       PeerAddress(p->ble_security.key_notif.bd_addr).text);
     esp_ble_confirm_reply(p->ble_security.key_notif.bd_addr, false);
   } else if (event == ESP_GAP_BLE_AUTH_CMPL_EVT) {
@@ -127,12 +135,14 @@ void gapCb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *p) {
       PeerAddress(auth.bd_addr).text, int(active), int(auth.success), unsigned(auth.fail_reason),
       unsigned(auth.auth_mode), unsigned(auth.addr_type));
     if (!active) return;
-    secure = auth.success && (auth.auth_mode & ESP_LE_AUTH_REQ_MITM);
+    secure = auth.success && (!RequirePin || (auth.auth_mode & ESP_LE_AUTH_REQ_MITM));
+    if (secure) secure = commandSession.authorize(connectionGeneration);
+    if (!secure) commandSession.revoke();
     if (secure) {
-      ESP_LOGI("gateway", "BLE authenticated encryption ready: conn=%u bonded_peers=%d",
-        unsigned(connection), esp_ble_get_bond_device_num());
+      ESP_LOGI("gateway", "BLE encryption ready: conn=%u bonded_peers=%d pin_required=%u",
+        unsigned(connection), esp_ble_get_bond_device_num(), unsigned(RequirePin));
     } else {
-      ESP_LOGE("gateway", "BLE PIN authentication failed; closing conn=%u", unsigned(connection));
+      ESP_LOGE("gateway", "BLE pairing/encryption failed; closing conn=%u", unsigned(connection));
       esp_ble_gatts_close(interface, connection);
     }
   }
@@ -169,16 +179,21 @@ void gattsCb(esp_gatts_cb_event_t event, esp_gatt_if_t iface, esp_ble_gatts_cb_p
     }
   } else if (event == ESP_GATTS_CONNECT_EVT) {
     if (connected && p->connect.conn_id != connection) { esp_ble_gatts_close(interface, p->connect.conn_id); return; }
+    commandSession.revoke();
+    connectionGeneration = commandSession.begin();
+    if (!connectionGeneration) { esp_ble_gatts_close(interface, p->connect.conn_id); return; }
     connection = p->connect.conn_id; memcpy(remote, p->connect.remote_bda, 6);
     connected = true; secure = false; subscribed = false; mtu = 23;
-    ESP_LOGI("gateway", "BLE connected: peer=%s conn=%u; requesting authenticated encryption",
-      PeerAddress(remote).text, unsigned(connection));
+    ESP_LOGI("gateway", "BLE connected: peer=%s conn=%u; requesting encryption pin_required=%u",
+      PeerAddress(remote).text, unsigned(connection), unsigned(RequirePin));
     if (advertising) esp_ble_mesh_stop_ble_advertising(advIndex);
     // Master initiates security; the phone waits for bonding before GATT setup.
-    const esp_err_t result = esp_ble_set_encryption(remote, ESP_BLE_SEC_ENCRYPT_MITM);
+    const esp_err_t result = esp_ble_set_encryption(remote,
+      RequirePin ? ESP_BLE_SEC_ENCRYPT_MITM : ESP_BLE_SEC_ENCRYPT_NO_MITM);
     ESP_LOGI("gateway", "BLE encryption request: result=%s (0x%x)", esp_err_to_name(result), unsigned(result));
     if (result != ESP_OK) esp_ble_gatts_close(interface, connection);
   } else if (event == ESP_GATTS_DISCONNECT_EVT && p->disconnect.conn_id == connection) {
+    commandSession.revoke();
     ESP_LOGW("gateway", "BLE disconnected: peer=%s conn=%u reason=0x%02x secure=%d subscribed=%d",
       PeerAddress(p->disconnect.remote_bda).text, unsigned(connection), unsigned(p->disconnect.reason),
       int(secure.load()), int(subscribed.load()));
@@ -226,26 +241,41 @@ bool ControlGateway::init(uint32_t passkey, const char *name) {
   commands_ = xQueueCreate(12, sizeof(CommandLine)); output_ = xQueueCreate(32, 192);
   liveOutput_ = xQueueCreate(5, 192);
   if (!commands_ || !output_ || !liveOutput_) return false;
-  usb_serial_jtag_driver_config_t usb{};
-  usb.tx_buffer_size = 2048;
-  usb.rx_buffer_size = 1024;
-  if (usb_serial_jtag_driver_install(&usb) != ESP_OK) return false;
-  // Logs and maintenance replies share the buffered native USB driver.
-  usb_serial_jtag_vfs_use_driver();
-  if (!pinCode) {
-    // Keep USB maintenance available, but never expose an unauthenticated
-    // business service when the device has not been commissioned with a PIN.
+  if (uart_driver_install(UART_NUM_0, 1024, 2048, 0, nullptr, 0) != ESP_OK) return false;
+  uart_config_t uart{};
+  uart.baud_rate = 115200;
+  uart.data_bits = UART_DATA_8_BITS;
+  uart.parity = UART_PARITY_DISABLE;
+  uart.stop_bits = UART_STOP_BITS_1;
+  uart.flow_ctrl = UART_HW_FLOWCTRL_DISABLE;
+  uart.source_clk = UART_SCLK_DEFAULT;
+  // Drain startup logs before reconfiguring the UART and resetting its FIFOs.
+  if (uart_wait_tx_done(UART_NUM_0, pdMS_TO_TICKS(100)) != ESP_OK ||
+      uart_param_config(UART_NUM_0, &uart) != ESP_OK) {
+    uart_driver_delete(UART_NUM_0);
+    return false;
+  }
+  // Logs and maintenance replies share the buffered USB-UART driver.
+  uart_vfs_dev_use_driver(UART_NUM_0);
+  if (RequirePin && !pinCode) {
+    // PIN mode keeps phone control disabled until a PIN has been provisioned.
     ESP_LOGE("gateway", "Master control GATT disabled: no valid six-digit PIN; run `pin 123456` over USB, then reboot");
   } else {
-    ESP_LOGI("gateway", "Master control GATT enabled: service=a64d0001-2f9c-4b6e-8db7-a570530e1000; PIN authentication required; current PIN=%06lu",
-      static_cast<unsigned long>(pinCode));
+    if (RequirePin) {
+      ESP_LOGI("gateway", "Master control GATT enabled: PIN authentication required");
+    } else {
+      ESP_LOGW("gateway", "Master control GATT enabled: development no-PIN pairing (Just Works); encryption required");
+    }
+    const uint16_t readPermission = RequirePin ? ESP_GATT_PERM_READ_ENC_MITM : ESP_GATT_PERM_READ_ENCRYPTED;
+    const uint16_t writePermission = RequirePin ? ESP_GATT_PERM_WRITE_ENC_MITM : ESP_GATT_PERM_WRITE_ENCRYPTED;
     attr(0, 2, reinterpret_cast<uint8_t *>(&primaryUuid), ESP_GATT_PERM_READ, 16, 16, serviceUuid, true);
     attr(1, 2, reinterpret_cast<uint8_t *>(&charUuid), ESP_GATT_PERM_READ, 1, 1, &rxProperty, true);
-    attr(2, 16, rxUuid, ESP_GATT_PERM_WRITE_ENC_MITM, 159, 0, &empty, false);
+    attr(2, 16, rxUuid, writePermission, 159, 0, &empty, false);
     attr(3, 2, reinterpret_cast<uint8_t *>(&charUuid), ESP_GATT_PERM_READ, 1, 1, &txProperty, true);
-    attr(4, 16, txUuid, ESP_GATT_PERM_READ_ENC_MITM, 191, 0, &empty, false);
-    attr(5, 2, reinterpret_cast<uint8_t *>(&cccdUuid), ESP_GATT_PERM_READ_ENC_MITM | ESP_GATT_PERM_WRITE_ENC_MITM, 2, 2, cccd, false);
-    esp_ble_auth_req_t auth = ESP_LE_AUTH_REQ_SC_MITM_BOND; uint8_t io = ESP_IO_CAP_OUT, keySize = 16;
+    attr(4, 16, txUuid, readPermission, 191, 0, &empty, false);
+    attr(5, 2, reinterpret_cast<uint8_t *>(&cccdUuid), readPermission | writePermission, 2, 2, cccd, false);
+    esp_ble_auth_req_t auth = RequirePin ? ESP_LE_AUTH_REQ_SC_MITM_BOND : ESP_LE_AUTH_REQ_SC_BOND;
+    uint8_t io = RequirePin ? ESP_IO_CAP_OUT : ESP_IO_CAP_NONE, keySize = 16;
     // IDF defaults include BR/EDR LinkKey (0x08). This BLE-only build must
     // distribute only LE encryption/identity keys and never request CTKD.
     uint8_t initKeys = ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK;
@@ -263,10 +293,10 @@ bool ControlGateway::init(uint32_t passkey, const char *name) {
         !check("SM key size", esp_ble_gap_set_security_param(ESP_BLE_SM_MAX_KEY_SIZE, &keySize, sizeof(keySize))) ||
         !check("SM initiator BLE keys", esp_ble_gap_set_security_param(ESP_BLE_SM_SET_INIT_KEY, &initKeys, sizeof(initKeys))) ||
         !check("SM responder BLE keys", esp_ble_gap_set_security_param(ESP_BLE_SM_SET_RSP_KEY, &responseKeys, sizeof(responseKeys))) ||
-        !check("SM static passkey", esp_ble_gap_set_security_param(ESP_BLE_SM_SET_STATIC_PASSKEY, &pinCode, sizeof(pinCode))) ||
+        (RequirePin && !check("SM static passkey", esp_ble_gap_set_security_param(ESP_BLE_SM_SET_STATIC_PASSKEY, &pinCode, sizeof(pinCode)))) ||
         !check("GATT app registration", esp_ble_gatts_app_register(0x5055))) return false;
-    ESP_LOGI("gateway", "BLE security: SC+MITM+BOND display-only key_size=%u init_keys=0x%02x rsp_keys=0x%02x; BR/EDR CTKD disabled",
-      unsigned(keySize), unsigned(initKeys), unsigned(responseKeys));
+    ESP_LOGI("gateway", "BLE security: SC+BOND pin_required=%u key_size=%u init_keys=0x%02x rsp_keys=0x%02x; BR/EDR CTKD disabled",
+      unsigned(RequirePin), unsigned(keySize), unsigned(initKeys), unsigned(responseKeys));
   }
   return xTaskCreatePinnedToCore([](void *p) { static_cast<ControlGateway *>(p)->ioWorker(); },
     "console_ble", 4096, this, 3, nullptr, 0) == pdPASS;
@@ -274,6 +304,10 @@ bool ControlGateway::init(uint32_t passkey, const char *name) {
 bool ControlGateway::submit(const char *text, size_t length, bool bluetooth) {
   if (!text || !length || length >= sizeof(CommandLine::text) || memchr(text, 0, length)) return false;
   CommandLine cmd; cmd.bluetooth = bluetooth; memcpy(cmd.text, text, length);
+  if (bluetooth) {
+    cmd.session=commandSession.token();
+    if (!cmd.session) return false;
+  }
   // One write = one command, not an unbounded stream or a list of commands.
   for (size_t i = 0; i < length; ++i) if (cmd.text[i] == '\r' || cmd.text[i] == '\n') {
     if (i != length - 1) return false;
@@ -286,7 +320,16 @@ bool ControlGateway::submit(const char *text, size_t length, bool bluetooth) {
   }
   return true;
 }
-bool ControlGateway::receive(CommandLine &cmd) { return xQueueReceive(commands_, &cmd, 0) == pdTRUE; }
+bool ControlGateway::authorized(const CommandLine &cmd) const {
+  return !cmd.bluetooth || commandSession.accepts(cmd.session);
+}
+bool ControlGateway::receive(CommandLine &cmd) {
+  while (xQueueReceive(commands_, &cmd, 0) == pdTRUE) {
+    if (authorized(cmd)) return true;
+    ESP_LOGW("gateway", "Discarded queued command from an expired BLE connection");
+  }
+  return false;
+}
 #if defined(PUMP_DISCOVERY_TRACE)
 bool ControlGateway::setDiagnosticAdvertising(bool enabled) {
   if (connected) return false;
@@ -317,7 +360,7 @@ bool ControlGateway::publishLive(const char *text) {
 void ControlGateway::ioWorker() {
   char input[160] = {}; size_t used = 0; bool discarding = false;
   for (;;) {
-    uint8_t bytes[32]; const int n = usb_serial_jtag_read_bytes(bytes, sizeof(bytes), pdMS_TO_TICKS(5));
+    uint8_t bytes[32]; const int n = uart_read_bytes(UART_NUM_0, bytes, sizeof(bytes), pdMS_TO_TICKS(5));
     for (int i = 0; i < n; ++i) {
       const char c = char(bytes[i]);
       if (c == '\r' || c == '\n') {
@@ -328,8 +371,11 @@ void ControlGateway::ioWorker() {
     }
     char out[192];
     if (xQueueReceive(output_, out, 0) == pdTRUE || xQueueReceive(liveOutput_, out, 0) == pdTRUE) {
-      // An unplugged USB cable must not hold up phone notifications.
-      usb_serial_jtag_write_bytes(out, strlen(out), pdMS_TO_TICKS(5));
+      // Use the same FILE lock as ESP_LOG's vprintf for complete reply lines.
+      flockfile(stdout);
+      fwrite(out, 1, strlen(out), stdout);
+      fflush(stdout);
+      funlockfile(stdout);
       portENTER_CRITICAL(&textMux); memcpy(latest, out, sizeof(latest)); portEXIT_CRITICAL(&textMux);
       if (connected && secure && subscribed) {
         const size_t len = strlen(out), chunk = std::min<size_t>(mtu - 3, 180);

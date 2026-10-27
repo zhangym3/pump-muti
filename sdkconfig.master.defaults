@@ -3,9 +3,15 @@ CONFIG_BLE_MESH_CFG_CLI=y
 CONFIG_BLE_MESH_MAX_PROV_NODES=32
 CONFIG_BLE_MESH_PBA_SAME_TIME=1
 CONFIG_BLE_MESH_PROVISIONER_SUBNET_COUNT=2
-CONFIG_BLE_MESH_PROVISIONER_APP_KEY_COUNT=2
-# GATT/Mesh application callbacks log through the buffered USB driver. The
+CONFIG_BLE_MESH_PROVISIONER_APP_KEY_COUNT=8
+# GATT/Mesh application callbacks log through the buffered UART driver. The
 # default 3072-byte BTC stack overflowed during GATT registration on the bench.
 CONFIG_BT_BTC_TASK_STACK_SIZE=6144
 # Required by BLE_MESH_USE_DUPLICATE_SCAN (see the SDK Kconfig help).
 CONFIG_BT_CTRL_SCAN_DUPL_TYPE_DATA_DEVICE=y
+# Require authenticated pairing. Recovery administration additionally requires
+# independent installation trust; a six-digit PIN alone is not recovery authority.
+# CONFIG_PUMP_DEV_NO_PIN is not set
+
+# Five bindings + legacy + one pending + one quarantine; see recovery_resources.h.
+CONFIG_BLE_MESH_MODEL_KEY_COUNT=8

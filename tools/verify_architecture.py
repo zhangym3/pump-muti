@@ -1,11 +1,11 @@
-"""Verify the static role boundary between the ESP32-C3 master and ESP32-C3 slave."""
+"""Verify the static role boundary between the ESP32-S3 master and ESP32-C3 slave."""
 from pathlib import Path
 import json
 import sys
 
 master = Path(__file__).resolve().parents[1]
 slave = master.parent / "pump-muti-slave"
-app = master.parent / "pumpmutiapp" / "app" / "src"
+app = master.parent / "pump-muti-app" / "app" / "src"
 
 def files(root):
     return [p for folder in ("src", "include") for p in (root / folder).rglob("*") if p.is_file()] + [root / "platformio.ini"]
@@ -14,6 +14,8 @@ def text(root):
     return "\n".join(p.read_text(encoding="utf-8", errors="ignore") for p in files(root))
 
 errors = []
+if not app.is_dir():
+    errors.append(f"missing APP source directory: {app}")
 master_text = text(master)
 slave_text = text(slave)
 if "PUMP_ROLE_MASTER" in master_text or "board::IsMaster" in master_text:
@@ -29,8 +31,8 @@ for marker in ("MasterScheduler", "PumpSafetyController", "scanSlaves", "joinSla
 for marker in ("ValveIO", "FlowReading", "SlaveInterlock", "BranchFlow", "void valve("):
     if marker in master_text:
         errors.append(f"master product sources still contain slave hardware symbol {marker}")
-if "board = esp32-c3-devkitm-1" not in (master / "platformio.ini").read_text(encoding="utf-8"):
-    errors.append("master board target is not esp32-c3-devkitm-1")
+if "board = esp32-s3-devkitc-1" not in (master / "platformio.ini").read_text(encoding="utf-8"):
+    errors.append("master board target is not esp32-s3-devkitc-1")
 if "board = esp32-c3-devkitm-1" not in (slave / "platformio.ini").read_text(encoding="utf-8"):
     errors.append("slave board target is not esp32-c3-devkitm-1")
 for relative in ("include/protocol.h", "src/protocol.cpp", "include/control_request.h", "docs/PROTOCOL_VECTORS.md",
@@ -46,7 +48,7 @@ if "meshNeedsMigration" in app_text or "mesh_migration_" in app_text:
 pump_screens = app / "main" / "java" / "com" / "cczb" / "app" / "PumpScreens.kt"
 if pump_screens.is_file() and "若 Master 保留旧 Mesh Node 角色" in pump_screens.read_text(encoding="utf-8", errors="ignore"):
     errors.append("APP settings still describe automatic legacy Mesh migration")
-for root, role, chip, board in ((master, "pump_master", "esp32c3", "esp32-c3-devkitm-1"),
+for root, role, chip, board in ((master, "pump_master", "esp32s3", "esp32-s3-devkitc-1"),
                                 (slave, "valve_slave_c3", "esp32c3", "esp32-c3-devkitm-1")):
     manifest_path = root / "dist" / "manifest.json"
     if not manifest_path.is_file():
@@ -65,5 +67,5 @@ if errors:
         print(f"ERROR: {error}")
     raise SystemExit(1)
 print("role boundary: PASS")
-print("master: ESP32-C3 Provisioner/pump only")
+print("master: ESP32-S3 Provisioner/pump only")
 print("slave: ESP32-C3 Node/valve/flow/interlock only")

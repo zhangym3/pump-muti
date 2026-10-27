@@ -1,5 +1,7 @@
 # ESP32-C3 主控迁移（2026-10-23）
 
+历史记录：2026-10-26 主控已恢复 ESP32-S3 N16R8，当前配置与接线见 [ESP32-S3 迁移说明](ESP32_S3_MIGRATION.md)。本文仅描述当时的 C3 主控，从机仍使用 C3。
+
 主机与从机均使用 ESP32-C3 Super Mini，按 4MB Flash / DIO / 40MHz 构建。两者仍是独立固件：主机 `pump_master`，从机 `valve_slave_c3`，不能互刷。主机 Board 使用 PlatformIO 的 `esp32-c3-devkitm-1` 通用定义。芯片是单核 RISC-V，不使用 PSRAM。
 
 ## 主机接线

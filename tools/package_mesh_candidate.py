@@ -117,7 +117,7 @@ def main():
     parser.add_argument("--platformio-home", type=Path, default=Path.home() / ".platformio")
     parser.add_argument("--output", type=Path, required=True, help="New directory, must not exist")
     parser.add_argument("--evidence-label", default="implementation", help="Firmware build/test evidence filename suffix")
-    parser.add_argument("--master-env", choices=("pump_master", "pump_master_five_candidate"), default="pump_master")
+    parser.add_argument("--master-env", choices=("pump_master",), default="pump_master")
     parser.add_argument("--master-evidence-label", help="Master build/envdump/compiledb suffix; tests use --evidence-label")
     parser.add_argument("--app-test-log", type=Path, help="Log from the current APP test run")
     parser.add_argument("--report", type=Path, action="append", default=[], help="Additional report to include")
@@ -132,7 +132,7 @@ def main():
     label = args.evidence_label
     master_label = args.master_evidence_label or label
     app_test_log = args.app_test_log.resolve() if args.app_test_log else app / "implementation-tests.log"
-    candidate_concurrency = 5 if args.master_env == "pump_master_five_candidate" else 1
+    candidate_concurrency = 1
     require(re.fullmatch(r"[a-z0-9-]+", label), "Invalid evidence label")
     require(re.fullmatch(r"[a-z0-9-]+", master_label), "Invalid master evidence label")
     for report in args.report:
@@ -146,7 +146,7 @@ def main():
         require(not target.is_relative_to(root / "src") and target != root, "Invalid output path")
     tools = args.platformio_home / "packages"
     info = {
-        "master": firmware(master, args.master_env, "esp32c3", tools / "toolchain-riscv32-esp/bin/riscv32-esp-elf-nm.exe", master_label, candidate_concurrency),
+        "master": firmware(master, args.master_env, "esp32s3", tools / "toolchain-xtensa-esp-elf/bin/xtensa-esp32s3-elf-nm.exe", master_label, candidate_concurrency),
         "slave": firmware(slave, "valve_slave_c3", "esp32c3", tools / "toolchain-riscv32-esp/bin/riscv32-esp-elf-nm.exe", label),
     }
     board = (master / "include/board_profile.h").read_text(encoding="utf-8")
@@ -330,7 +330,7 @@ def main():
 主机生产默认并发保持 1；台架五路候选环境支持并发 5，实际包配置见 candidate.json 的 candidate_max_concurrent。
 本打包工具不刷写设备或启泵。先阅读 docs/ 下实施报告和现场验收步骤；仅 1 台从机，五路尚未实机验收。
 master/firmware.bin 与 slave/firmware.bin 均位于 0x20000。
-ESP32-C3 主机和 ESP32-C3 从机 bootloader.bin 均位于 0x0；两端 partitions.bin 均位于 0x8000。
+ESP32-S3 主机和 ESP32-C3 从机 bootloader.bin 均位于 0x0；两端 partitions.bin 均位于 0x8000。
 精确芯片/地址/SHA256 见 candidate.json，SHA256SUMS 覆盖包内文件。
 不要使用 IDF 辅助 flash_args 中的 0x10000；刷写前确认 PlatformIO 中主从端口并核对设备身份。
 APK 为 debug 候选构建，未安装到手机、未验收真机重连/重启 UI。

@@ -8,6 +8,8 @@
 #include "flow_calibration_state.h"
 #include "speed_calibration.h"
 #include "maintenance_session.h"
+#include "master_identity.h"
+#include "recovery_nvs.h"
 namespace pump {
 class Storage {
  public:
@@ -25,10 +27,15 @@ class Storage {
   bool finishRemoval();
   const MaintenanceRecord &maintenance() const { return maintenance_; }
   bool writeMaintenance(const MaintenanceRecord &value);
+  recovery::MasterIdentityStore &masterIdentity() { return identity_; }
   uint16_t resultAddress(JobKey job, size_t slot) const {
     return slot < MaxNodes ? resultAddresses_.address(job, slot, state_.nodes[slot].address) : 0;
   }
  private:
+  static bool identityRandom(uint8_t *out,size_t size);
+  recovery::NvsBlobStore identityBackend_;
+  recovery::Journal identityJournal_{identityBackend_};
+  recovery::MasterIdentityStore identity_{identityJournal_,identityRandom};
   nvs_handle_t handle_ = 0;
   PersistentState state_;
   CalibrationStore calibrations_;

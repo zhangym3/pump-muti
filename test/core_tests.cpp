@@ -1001,14 +1001,17 @@ void single_slave_removal_waits_for_exact_events_and_durable_cleanup() {
   removal.deleted(2, true); CHECK(removal.stage() == Stage::Cleanup);
   removal.complete(false); CHECK(removal.stage() == Stage::Failed);
 
-  // Offline nodes still leave the local network; counter wrap is supported.
+  // Timeout retains the DevKey and registry, including across counter wrap.
   removal.begin(10, 43, UINT32_MAX - 1000, true);
   removal.tick(3998); CHECK(removal.stage() == Stage::Remote);
-  removal.tick(3999); CHECK(removal.stage() == Stage::DeleteReady && !removal.remoteReset());
-  removal.deleting(4000); removal.deleted(10, true);
-  removal.complete(true); CHECK(removal.stage() == Stage::Done);
+  removal.tick(3999); CHECK(removal.stage() == Stage::Pending && !removal.remoteReset());
+  removal.deleting(4000); removal.deleted(10, true); removal.complete(true);
+  CHECK(removal.stage() == Stage::Pending);
+  removal.remoteReply(10, true); CHECK(removal.stage() == Stage::Pending);
 
-  removal.begin(10, 44, 0, true); removal.remoteReply(10, false); removal.deleting(100);
+  removal.begin(10, 44, 0, true); removal.remoteReply(10, false);
+  CHECK(removal.stage() == Stage::Pending);
+  removal.begin(10, 45, 10, true); removal.remoteReply(10, true); removal.deleting(100);
   removal.tick(10099); CHECK(removal.stage() == Stage::Deleting);
   removal.tick(10100); CHECK(removal.stage() == Stage::Failed);
   removal.deleted(10, true); CHECK(removal.stage() == Stage::Failed);

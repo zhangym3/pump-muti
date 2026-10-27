@@ -1,5 +1,6 @@
 #include "application.h"
 #include "mesh_tx_diagnostics.h"
+#include "recovery_diagnostics.h"
 #include "hardware.h"
 #include "result_commit.h"
 #include "esp_log.h"
@@ -469,6 +470,7 @@ void Application::pumpTestReply(const ControlRequest &q, Reply result, uint32_t 
   gateway_.publish(text); localState(now); pumpPwmState();
 }
 void Application::command(CommandLine &line, uint32_t now) {
+  if (!gateway_.authorized(line)) return;
   char *tokens[12] = {}; size_t count = 0; char *save = nullptr;
   for (char *p = strtok_r(line.text, " \t", &save); p; p = strtok_r(nullptr, " \t", &save)) {
     if (count == 12) { gateway_.publish("INVALID too_many_fields"); return; } tokens[count++] = p;
@@ -476,6 +478,49 @@ void Application::command(CommandLine &line, uint32_t now) {
   if (!count) return;
   auto number = [&](size_t index, uint64_t &v, unsigned base = 10) { return index < count && unsignedNumber(tokens[index], v, base); };
   const char *op = tokens[0];
+  if (!strcmp(op,"master-identity") || !strcmp(op,"master-identity-init") || !strcmp(op,"master-identity-prove")) {
+    if (line.bluetooth) { gateway_.publish("UNAUTHORIZED identity_installation_requires_USB"); return; }
+    auto &identity=store_.masterIdentity();
+    if (!strcmp(op,"master-identity-init")) {
+      if (count!=2 || strcmp(tokens[1],"CONFIRM")) { gateway_.publish("INVALID identity_confirmation"); return; }
+      if (!idle() || mesh_.managementBusy()) { gateway_.publish("BUSY identity_requires_idle"); return; }
+      if (identity.state()==recovery::JournalState::Ready) { gateway_.publish("CONFLICT identity_already_initialized"); return; }
+      if (!identity.initialize()) { storageHealthy_=false; gateway_.publish("STORAGE identity_preserved_outputs_locked"); return; }
+    } else if ((!strcmp(op,"master-identity") && count!=1) || (!strcmp(op,"master-identity-prove") && count!=2)) {
+      gateway_.publish("INVALID identity_fields"); return;
+    }
+    const auto *id=identity.get();
+    if (!id) { gateway_.publish(identity.state()==recovery::JournalState::Empty?
+      "MASTER_ID initialized=0 recovery_enabled=0":"STORAGE identity_unavailable"); return; }
+    auto hex=[](const uint8_t *bytes,size_t size,char *out) {
+      constexpr char digits[]="0123456789abcdef";
+      for(size_t i=0;i<size;++i) {out[2*i]=digits[bytes[i]>>4];out[2*i+1]=digits[bytes[i]&15];} out[2*size]=0;
+    };
+    if (!strcmp(op,"master-identity-prove")) {
+      if (!idle() || mesh_.managementBusy()) {gateway_.publish("BUSY identity_requires_idle");return;}
+      recovery::Proof challenge{};recovery::Signature proof{};
+      if (strlen(tokens[1])!=64) {gateway_.publish("INVALID identity_challenge");return;}
+      for(size_t i=0;i<challenge.size();++i) {
+        auto nibble=[](char c)->int {return c>='0'&&c<='9'?c-'0':c>='a'&&c<='f'?c-'a'+10:-1;};
+        const int high=nibble(tokens[1][2*i]),low=nibble(tokens[1][2*i+1]);
+        if(high<0 || low<0) {gateway_.publish("INVALID identity_challenge");return;}
+        challenge[i]=uint8_t((high<<4)|low);
+      }
+      if (!identity.prove(challenge,proof)) {gateway_.publish("INVALID identity_challenge_or_crypto");return;}
+      char r[65],s[65],message[192];hex(proof.data(),32,r);hex(proof.data()+32,32,s);
+      snprintf(message,sizeof(message),"MASTER_PROOF nonce=%s r=%s",tokens[1],r);gateway_.publish(message);
+      snprintf(message,sizeof(message),"MASTER_PROOF nonce=%s s=%s",tokens[1],s);gateway_.publish(message);
+      return;
+    }
+    char master[33],network[33],device[33],pubA[67],pubB[65],message[192];
+    hex(id->master.data(),16,master);hex(id->network.data(),16,network);hex(id->device.data(),16,device);
+    hex(id->publicKey.data(),33,pubA);hex(id->publicKey.data()+33,32,pubB);
+    snprintf(message,sizeof(message),"MASTER_ID schema=1 initialized=1 epoch=%lu master=%s network=%s uuid=%s recovery_enabled=0",
+      (unsigned long)id->epoch,master,network,device);gateway_.publish(message);
+    snprintf(message,sizeof(message),"MASTER_KEY master=%s part=1 value=%s",master,pubA);gateway_.publish(message);
+    snprintf(message,sizeof(message),"MASTER_KEY master=%s part=2 value=%s",master,pubB);gateway_.publish(message);
+    return;
+  }
   if (!strcmp(op,"maintenance-status") && count==1) { maintenanceState(); return; }
   if (!strcmp(op,"maintenance-enter") || !strcmp(op,"maintenance-exit")) {
     if (line.bluetooth) { gateway_.publish("UNAUTHORIZED maintenance_requires_USB"); return; }
@@ -506,6 +551,11 @@ void Application::command(CommandLine &line, uint32_t now) {
     localState(now); pumpPwmState(); meshState(); return;
   }
   if (!strcmp(op, "mesh-diag") && count == 1) { meshState(); mesh_.logDiscoveryDiagnostics(); return; }
+  if (!strcmp(op, "recovery-resources") && count == 1) {
+    if (line.bluetooth) { gateway_.publish("UNAUTHORIZED diagnostics_requires_USB"); return; }
+    recovery::publishRecoveryResources([&](const char *text) { gateway_.publish(text); });
+    return;
+  }
 #if defined(PUMP_DISCOVERY_TRACE)
   if (!strcmp(op, "discovery-phone-adv")) {
     if (line.bluetooth) { gateway_.publish("UNAUTHORIZED maintenance_requires_USB"); return; }
@@ -803,13 +853,17 @@ void Application::command(CommandLine &line, uint32_t now) {
       meshState(uint32_t(request)); return;
     }
     if (!storageHealthy_) { reject(Reply::Storage); return; }
-    if (!idle() || pump_.testing() || commission_.active || store_.state().lastJob.unknown || mesh_.managementBusy()) {
+    const bool retryRemoval = store_.removingAddress() == address &&
+      !strcmp(m.phase,"REMOVE_PENDING");
+    const bool safeRetry = retryRemoval && resultsSettled() && !store_.maintenance().locked &&
+      !mode_.kind && !scheduler_.active() && !pump_.output() && !flowCalibrationLocked();
+    if ((!idle() && !safeRetry) || pump_.testing() || commission_.active || store_.state().lastJob.unknown || mesh_.managementBusy()) {
       reject(Reply::Busy); return;
     }
     if (!mesh_.ownsSlave(uint16_t(address))) { reject(Reply::Unauthorized); return; }
     // A separate additive NVS journal makes both sides of local deletion
     // resumable without changing the deployed task/state ABI.
-    if (!store_.beginRemoval(uint16_t(address))) { storageHealthy_=false; reject(Reply::Storage); return; }
+    if (!retryRemoval && !store_.beginRemoval(uint16_t(address))) { storageHealthy_=false; reject(Reply::Storage); return; }
     removalStarted_ = mesh_.removeSlave(uint16_t(address),uint32_t(request),now);
     if (!removalStarted_) { storageHealthy_=false; reject(Reply::Storage); return; }
     meshState(uint32_t(request)); return;

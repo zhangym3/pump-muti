@@ -6,8 +6,8 @@ from pathlib import Path
 import shutil
 
 ROLE = 'pump_master'
-BOARD = 'esp32-c3-devkitm-1'
-CHIP = 'esp32c3'
+BOARD = 'esp32-s3-devkitc-1'
+CHIP = 'esp32s3'
 BOOT_OFFSET = '0x0'
 root = Path(__file__).resolve().parents[1]
 dist = root / "dist"
@@ -27,9 +27,12 @@ if any(p.stat().st_mtime_ns > app.stat().st_mtime_ns for p in sources if p.name 
 config = (build / "config" / "sdkconfig.h").read_text()
 if f'#define CONFIG_IDF_TARGET "{CHIP}"' not in config:
     raise SystemExit("Build target does not match this project")
+dev_no_pin = '#define CONFIG_PUMP_DEV_NO_PIN 1' in config
 manifest = {"createdUtc": datetime.now(timezone.utc).isoformat(), "role": ROLE, "chip": CHIP,
-            "board": BOARD, "module": "ESP32-C3 Super Mini", "flash": "4MB",
+            "board": BOARD, "module": "ESP32-S3-WROOM-1 N16R8", "flash": "16MB",
             "pumpPwmGpio": 4, "psramEnabled": False, "hardwareValidated": False,
+            "developmentNoPin": dev_no_pin, "phonePairing": "just-works" if dev_no_pin else "passkey",
+            "phoneEncryptionRequired": True,
             "note": "Application offset 0x20000. Preserve NVS. Match chip and role before flashing.",
             "files": [], "sources": {}}
 for name, offset in images.items():

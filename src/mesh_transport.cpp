@@ -1,4 +1,5 @@
 #include "mesh_transport.h"
+#include "recovery_resources.h"
 #include "mesh_management_internal.h"
 #include "esp_bt.h"
 #include "esp_bt_main.h"
@@ -16,6 +17,13 @@
 #include "freertos/task.h"
 #include <cstdio>
 #include <new>
+
+// Defaults do not override an existing sdkconfig. Reject undersized candidates
+// at compile time instead of discovering the limit after a slave has left its net.
+static_assert(CONFIG_BLE_MESH_PROVISIONER_APP_KEY_COUNT >= pump::recovery::RequiredMasterAppKeys,
+              "Recovery requires at least eight Provisioner AppKey slots");
+static_assert(CONFIG_BLE_MESH_MODEL_KEY_COUNT >= pump::recovery::RequiredMasterAppKeys,
+              "Recovery requires at least eight model AppKey bindings");
 
 namespace pump {
 namespace {

@@ -359,6 +359,10 @@ void MeshTransport::managementTick(uint32_t now) {
     }
   }
   removal.tick(now);
+  if (removal.stage() == MeshRemoval::Stage::Pending) {
+    state.phase = "REMOVE_PENDING"; state.reason = "REMOTE_UNCONFIRMED";
+    state.busy = false; // Application's persistent removal journal still blocks jobs.
+  }
   if (removal.stage() == MeshRemoval::Stage::DeleteReady) {
     removal.deleting(now);
     if (esp_ble_mesh_provisioner_delete_node_with_addr(removal.address()) != ESP_OK) removal.deleted(removal.address(), false);

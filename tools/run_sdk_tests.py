@@ -114,6 +114,41 @@ def main():
     subprocess.run(compiler + ["-std=c11", "-Wall", "-Wextra", "-Werror", "-I", str(output),
                               str(root / "test/sdk_sequence_harness.c"), "-o", str(sequence_exe)], check=True)
     subprocess.run([str(sequence_exe)], check=True)
+    node = (component / "core/prov_node.c").read_text(encoding="utf-8")
+    oob = output / "sdk_oob_extracted.inc"
+    oob.write_text(function(node, "static int prov_auth(") +
+                   function(node, "static void prov_start("), encoding="utf-8")
+    evidence["oob_extracted_sha256"] = module.sha(oob.read_bytes())
+    evidence["oob_functions"] = 2
+    (output / "extracted.json").write_text(json.dumps(evidence, indent=2) + "\n", encoding="utf-8")
+    oob_exe = output / ("sdk_oob.exe" if sys.platform == "win32" else "sdk_oob")
+    subprocess.run(compiler + ["-std=c11", "-Wall", "-Wextra", "-Werror", "-I", str(output),
+                              str(root / "test/sdk_oob_harness.c"), "-o", str(oob_exe)], check=True)
+    subprocess.run([str(oob_exe)], check=True)
+    # Test real Provisioner allocation and local model binding independently.
+    # A larger Provisioner table alone cannot fix a smaller model->keys array.
+    management = (component / "core/pvnr_mgmt.c").read_text(encoding="utf-8")
+    appkey = output / "sdk_appkey_extracted.inc"
+    appkey_signatures = (
+        "static int provisioner_check_app_key(", "static int provisioner_check_app_idx(",
+        "static int provisioner_check_app_key_full(", "static int provisioner_check_net_idx(",
+        "int bt_mesh_provisioner_local_app_key_add(", "int bt_mesh_provisioner_bind_local_model_app_idx(")
+    appkey.write_text("\n".join(function(management, signature) for signature in appkey_signatures), encoding="utf-8")
+    net_header = (component / "core/net.h").read_text(encoding="utf-8")
+    type_start = net_header.index("struct bt_mesh_app_key {")
+    types = output / "sdk_appkey_types.inc"
+    types.write_text(net_header[type_start:net_header.index("\n};", type_start) + 3] + "\n", encoding="utf-8")
+    evidence["appkey_extracted_sha256"] = module.sha(appkey.read_bytes())
+    evidence["appkey_types_sha256"] = module.sha(types.read_bytes())
+    evidence["appkey_functions"] = len(appkey_signatures)
+    evidence["appkey_capacity_cases"] = [[2, 3], [8, 3], [8, 8]]
+    (output / "extracted.json").write_text(json.dumps(evidence, indent=2) + "\n", encoding="utf-8")
+    for key_capacity, model_capacity in evidence["appkey_capacity_cases"]:
+        appkey_exe = output / (f"sdk_appkey_{key_capacity}_{model_capacity}" + (".exe" if sys.platform == "win32" else ""))
+        subprocess.run(compiler + ["-std=c11", "-Wall", "-Wextra", "-Werror", "-Wno-sign-compare", "-I", str(output),
+                                  f"-DTEST_APPKEY_CAPACITY={key_capacity}", f"-DTEST_MODEL_CAPACITY={model_capacity}",
+                                  str(root / "test/sdk_appkey_harness.c"), "-o", str(appkey_exe)], check=True)
+        subprocess.run([str(appkey_exe)], check=True)
     with tempfile.TemporaryDirectory(prefix="pinning-", dir=output) as temp:
         temp = Path(temp)
         pin_project = temp / "project"

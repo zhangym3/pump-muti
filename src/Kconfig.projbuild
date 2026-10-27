@@ -1,0 +1,11 @@
+menu "Pump master development options"
+
+config PUMP_DEV_NO_PIN
+    bool "Pair phones without a PIN (development only)"
+    default n
+    help
+        Use encrypted BLE Just Works pairing without passkey authentication.
+        A stored PIN is retained but ignored. Disable this option to restore
+        six-digit PIN authentication before release.
+
+endmenu
